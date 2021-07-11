@@ -1,0 +1,3254 @@
+// The Player Class
+
+// Copyright Lyra LLC, 1996. All rights reserved.
+
+#define STRICT
+
+#include "Central.h"
+#include <Windows.h>
+#include <string.h>
+#include <map>
+#include <vector>
+#include "cDDraw.h"
+#include "cDSound.h"
+#include "cChat.h"
+#include "cActorList.h"
+#include "cControlPanel.h"
+#include "cGameServer.h"
+#include "cActor.h"
+#include "cEffects.h"
+#include "cLevel.h"
+#include "cItem.h"
+#include "cOrnament.h"
+#include "cArts.h"
+#include "cParty.h"
+#include "Realm.h"
+#include "Move.h"
+#include "4dx.h"
+#include "Dialogs.h"
+#include "Mouse.h"
+#include "Options.h"
+#include "cPlayer.h"
+#include "cPalettes.h"
+#include "Utils.h"
+#include "resource.h"
+#include "keyboard.h"
+#include "cAgentBox.h"
+#include "LmStats.h"
+#include "LmXPTable.h"
+#include "./MeHelper.h" //added helper class for MouseEvent
+extern xp_entry lyra_xp_table[];
+
+
+#ifdef AGENT
+#include "cAI.h"
+#endif
+
+const int PLAYER_WALK_ANIMATE_TICKS = 84;
+const int PLAYER_RUN_ANIMATE_TICKS = 56;
+const int PLAYER_BLADE_ANIMATE_TICKS = 1;
+const int TP_REDIRECT_LEVEL = 52; // setting to level 52 for now since there isn't a level 52
+const int TP_REDIRECT_ROOM = 1;
+
+// # of actor-collision-free moves after a teleport
+const unsigned int NUM_FREE_MOVES = 5;
+const int HEAL_INTERVAL = 5000; // natural healing
+const int SECTOR_TAG_INTERVAL = 2000; // apply sector tags every 2 seconds
+const int NIGHTMARE_CHECK_INTERVAL = 1000; // for area effect mare stuff
+const int POISON_INTERVAL = 4000;
+const int BLEED_INTERVAL = 3000;
+const int TRAIL_INTERVAL = 5000;
+const float MIN_TRAIL_SEPARATION = 300.0f;
+const float UPDOWNVEL = 12.0f; // speed at which we look/down
+const int HORRON_FEAR_DISTANCE = 150000;
+const int HORRON_DRAIN_DISTANCE = 50000;
+const int THRESHOLD_QUAD = 6;
+const int MAGIC_XOR_VAR = 0xf801;
+std::map<int, freqtick_t> item_ae_ticks;
+//////////////////////////////////////////////////////////////////
+// External Global Variables
+
+extern cDDraw *cDD;
+extern cDSound *cDS;
+extern cGameServer *gs;
+extern cEffects *effects;
+extern cActorList *actors;
+extern cPlayer *player;
+extern cChat *display;
+extern cArts *arts;
+extern cControlPanel *cp;
+extern HINSTANCE hInstance;
+extern unsigned char keyboard[num_keystates];
+extern options_t options;
+extern cLevel *level;
+extern mouse_move_t mouse_move;
+extern mouse_look_t mouse_look;
+extern timing_t *timing;
+extern cTimedEffects *timed_effects;
+extern avatar_poses_t dreamer_poses[];
+extern avatar_poses_t mare_poses[];
+extern bool ready;
+extern bool acceptrejectdlg;
+extern cPaletteManager *shader;
+extern bool showing_map;
+extern cAgentBox *agentbox;
+extern HWND hwnd_acceptreject;
+extern unsigned long last_mumble_message;
+extern ppoint_t pp; // personality points use tracker
+
+const int guild_levels[NUM_GUILDS] = {
+	17,18,21,22,23,24,25,26
+};
+
+/////////////////////////////////////////////////////////////////
+// Class Defintion
+
+// Constructor
+cPlayer::cPlayer(short viewport_height) :
+	cActor(0.0f, 0.0f, 0, 0, PLAYER)
+{
+	playerID = INVALID_PLAYERID;
+	num_fly_collides = 0;
+	// set vertical tilt members here; rest handled in Init method
+	vertical_tilt_origin = viewport_height / 2;
+	max_vertical_tilt = viewport_height;
+	vertical_tilt = vertical_tilt_origin;
+	vertical_tilt_float = (float)vertical_tilt_origin;
+	collapse_time = 0;
+	checksum_incorrect = attempting_teleport = false;
+
+   
+	for (int i = 0; i < COLLAPSES_TRACKED; i++)
+	{
+		collapses[i].collapser_id = Lyra::ID_UNKNOWN;
+		collapses[i].time = 0;
+	}
+	next_collapse_index = 0;
+
+	return;
+}
+
+
+void cPlayer::InitPlayer(void)
+{
+	int i;
+
+	orbit = 0;
+	this->SetAvatar(options.avatar, false);
+	avatar_poses = dreamer_poses;
+	if (avatar_poses[STANDING].start_frame < frames)
+		currframe = avatar_poses[STANDING].start_frame; // for normal avatars
+	start_x = start_y = 0.0f;
+	start_angle = start_level = room = 0;
+	xp = last_footstep = quest_xp_pool = 0;
+	speed = WALK_SPEED;
+	reset_speed = turnrate = 0.0f;
+	num_items = 0;
+	selected_stat = Stats::DREAMSOUL;
+	focus_stat = Stats::WILLPOWER;
+	injured = teleporting = jumped = waving = old_sanct = false;
+	next_heal = next_regeneration = LyraTime() + HEAL_INTERVAL;
+	next_sector_tag = LyraTime() + SECTOR_TAG_INTERVAL;
+	next_nightmare_check = LyraTime() + NIGHTMARE_CHECK_INTERVAL;
+	next_poison = next_bleed = next_trail = 0;
+	free_moves = 5;
+	channelTarget = lastChannelTarget = 0;
+	step_frame = avatar_poses[WALKING].start_frame;
+	checksum_incorrect = last_loc_valid = false;
+	item_flags_sorting_changed = false;
+	//  Initialize curse_strength to zero
+	curse_strength = 0; // no curse on new player
+	blast_chance = 0; // no chance Ago will return Blast to start
+	poison_strength = 0;
+	reflect_strength = 0;
+	cripple_strength = 0;
+	avatar_armor_strength = 0;
+	last_poisoner = last_bleeder = Lyra::ID_UNKNOWN;
+	gamesite = GMsg_LoginAck::GAMESITE_LYRA;
+	gamesite_id = 0;
+	session_id = 0;
+	safezone = false;
+	guild_level = false;
+	for (i = 0; i < NUM_GUILDS; i++)
+		guild_ranks[i].rank = Guild::NO_RANK;
+
+	for (i = 0; i < NUM_PLAYER_STATS; i++)
+	{
+		stats[i].current = stats[i].max = Stats::STAT_MIN;
+		stats[i].current_needs_update = false;
+	}
+
+	LoadString(hInstance, IDS_DREAMSOUL, stats[Stats::DREAMSOUL].name, 16);
+	LoadString(hInstance, IDS_WILLPOWER, stats[Stats::WILLPOWER].name, 16);
+	LoadString(hInstance, IDS_INSIGHT, stats[Stats::INSIGHT].name, 16);
+	LoadString(hInstance, IDS_RESILIENCE, stats[Stats::RESILIENCE].name, 16);
+	LoadString(hInstance, IDS_LUCIDITY, stats[Stats::LUCIDITY].name, 16);
+
+	for (i = 0; i < NUM_ARTS; i++)
+	{
+		skills[i].skill = 0;
+		skills[i].needs_update = false;
+	}
+
+#ifndef AGENT
+	playerID = Lyra::ID_UNKNOWN;
+#endif// AGENT
+	last_party_leader = Lyra::ID_UNKNOWN;
+	next_heal = LyraTime() + HEAL_INTERVAL;
+	active_shield = NO_ITEM;
+
+	_tcscpy(upper_name, options.username[options.account_index]);
+	_tcsupr(upper_name);
+
+	using_blade = false;
+	blade_position_index = 0;
+	blade_ticks = 0;
+	pp_pool = ppoints = granting_pp = 0;
+
+	hit = false;
+
+	// Jared 6-25-00
+	// Don't babble pmares. They have preset speach and emotes now
+//#ifdef PMARE
+//		options.babble_filter = true; 
+//#else		
+	options.babble_filter = false;
+	//#endif
+
+}
+
+
+TCHAR* cPlayer::Name(void)
+{
+	return options.username[options.account_index];
+}
+
+TCHAR* cPlayer::Password(void)
+{
+	return options.password[options.account_index];
+}
+
+// set start x,y,angle for later use on death
+void cPlayer::SetStartPos(float starting_x, float starting_y, int starting_angle, int starting_level)
+{
+	start_x = starting_x;
+	start_y = starting_y;
+	start_angle = starting_angle;
+	start_level = starting_level;
+	eyeheight = (float)(z - (physht*.2));
+
+	return;
+}
+
+void cPlayer::ResetEyeHeight(void)
+{
+	if (vertical_tilt != vertical_tilt_origin)
+	{
+		reset_speed = timing->nticks*(float)UPDOWNVEL;
+		if (vertical_tilt_float > vertical_tilt_origin)
+			reset_speed = -reset_speed;
+	}
+	return;
+}
+
+// Returns the height delta for missiles fired by the player
+int cPlayer::HeightDelta(void)
+{
+	return (int)((vertical_tilt - vertical_tilt_origin) / 42);
+}
+
+bool cPlayer::Update(void)
+{
+	int moveangle = 0;
+	int aticks = 0;
+	realmid_t lastRoom;
+	float old_velocity = velocity;
+	float old_x = x;
+	float old_y = y;
+	float xheight;
+	bool move;	// true only when player can be moved by keyboard/mouse
+	bool spin = true; // true only when player can spin
+	bool animate = false;
+	forced_move_t forced_move = { false,false,false,false,false };
+	bool was_in_water = this->InWater();
+
+	if (terminate)
+		return false;
+
+	//if(!(flags & ACTOR_FLY))
+	this->ModifyHeight();
+
+	this->CheckStatus();
+
+	this->CheckMissile();
+
+	if (UsingBlade())
+	{
+		blade_ticks += timing->nmsecs;
+		if (blade_ticks > PLAYER_BLADE_ANIMATE_TICKS)
+		{
+			blade_ticks = 0;
+			blade_position_index++;
+		}
+	}
+
+	//extern int opt_on;
+	if (Hit())
+		// if (opt_on || Hit())
+	{
+		static float brightness = 0.3f;
+		const float brightness_rate = 0.005f;
+
+		shader->SetGlobalBrightness(brightness);
+		brightness += timing->nmsecs * brightness_rate;
+		if (brightness > 1.1)
+		{
+			shader->SetGlobalBrightness(1.0);
+			brightness = 0.3f;
+			SetHit(false);
+			//opt_on = false;
+		}
+	}
+
+	xheight = level->Sectors[sector]->FloorHt(x, y) + level->Sectors[sector]->HtOffset + physht;
+
+	if (flags & ACTOR_TRANSFORMED)
+		speed = SHAMBLE_SPEED;
+	// Jared 2-26-00
+	// XOR autorun with keyboard shift so that holding shift with autorun on
+	// will set speed to WALK, and vise versa
+	else if ((options.autorun + keyboard[Keystates::RUN]) % 2
+		|| mouse_move.shift || mouse_look.shift
+		|| (flags & ACTOR_SCARED)) // set speed
+		speed = RUN_SPEED;
+	else
+		speed = WALK_SPEED;
+
+#ifdef UL_DEBUG // super fast run for level building
+	if (!options.network)
+	{
+		if (speed == RUN_SPEED)
+			speed = RUN_SPEED * 3;
+		else
+			speed = RUN_SPEED;
+	}
+#endif
+
+	strafe = NO_STRAFE;
+
+	move = false;
+
+	if (!options.network ||
+		((options.welcome_ai || (gs && gs->LoggedIntoGame())) &&
+			((gs && gs->LoggedIntoLevel()) || (level->ID() == START_LEVEL_ID))))
+		move = true;
+
+	if ((flags & ACTOR_PARALYZED))//  || (cp->DragItem() != NO_ITEM))
+		move = false;
+
+	if (flags & ACTOR_SPIN) {
+		spin = false;
+		forced_move.left = true;
+	}
+
+	if (flags & ACTOR_WALK)
+	{
+		if (flags & ACTOR_SPRINT)
+		{
+			speed = RUN_SPEED;
+		}
+		else
+			speed = WALK_SPEED;
+	}
+	else if (flags & ACTOR_SPRINT)
+	{
+		speed = SPRINT_SPEED;
+
+		if (Hit())
+		{
+			// remove timed effect sprint
+			this->RemoveTimedEffect(LyraEffect::PLAYER_SPRINT);
+
+			// change to walk speed
+			speed = WALK_SPEED;
+		}
+	}
+
+	if (flags & ACTOR_SCARED)
+		forced_move.forward = true;
+
+	if (flags & ACTOR_DRUNK)	// force movement
+		switch (rand() % 6)
+		{
+		case 0:
+			forced_move.strafe = true;
+		case 1:
+			forced_move.left = true;
+			break;
+		case 2:
+			forced_move.strafe = true;
+		case 3:
+			forced_move.right = true;
+			break;
+		case 4:
+			forced_move.forward = true;
+			break;
+		case 5:
+			forced_move.backward = true;
+			break;
+		}
+
+	turnrate = 0.0f;
+
+	if (forming || dissolving)
+		aticks = ANIMATION_TICKS;
+	else if ((velocity < -MAXWALK) || (velocity > MAXWALK))
+		aticks = PLAYER_RUN_ANIMATE_TICKS;
+	else
+		aticks = PLAYER_WALK_ANIMATE_TICKS;
+
+	animate_ticks += timing->nmsecs;
+
+	if (animate_ticks > aticks)
+	{
+		animate_ticks = 0;
+		animate = true;
+		if (forming || dissolving) // update control panel for death/rebirth sequence
+		{
+			if (++currframe >= effects->EffectFrames(LyraBitmap::FORMREFORM_EFFECT))
+			{	// make them real again
+				forming = dissolving = false;
+				currframe = avatar_poses[STANDING].start_frame;
+			}
+			cp->AddAvatar();
+		}
+		if ((velocity < MAXWALK) && (velocity > -MAXWALK))
+			step_frame = 0;
+		if (++step_frame > avatar_poses[WALKING].end_frame)
+			step_frame = avatar_poses[WALKING].start_frame;
+	}
+
+	//declare and initialize mouse for raw input from our helper
+	MouseEvent mouse = MeHelper::GetME();
+	if (move)
+	{
+		if (!spin && keyboard[Keystates::STRAFE]) // disregard
+			keyboard[Keystates::STRAFE] = 0;
+		if ((keyboard[Keystates::STRAFE] || forced_move.strafe) &&
+			(keyboard[Keystates::TURN_RIGHT] /* || mouse_move.right*/ || keyboard[Keystates::TURN_LEFT]
+				/* || mouse_move.left */ || forced_move.right || forced_move.left || mouse.MouseXorYOverThree())) // strafing?
+		{
+			if (keyboard[Keystates::TURN_RIGHT] /* || mouse_move.right*/ || forced_move.right)
+			{ // handle angles for combined strafe / forwards / backwards move
+				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward)
+					moveangle = FixAngle(angle + Angle_45);
+				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward*/ || forced_move.backward)
+					moveangle = FixAngle(angle - Angle_45);
+				else moveangle = FixAngle(angle + Angle_90);
+				strafe = STRAFE_RIGHT;
+			}
+
+			if (keyboard[Keystates::TURN_LEFT] /* || mouse_move.left*/ || forced_move.left)
+			{ // handle angles for combined strafe / forwards / backwards move
+				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward*/ || forced_move.forward)
+					moveangle = FixAngle(angle - Angle_45);
+				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward*/ || forced_move.backward)
+					moveangle = FixAngle(angle + Angle_45);
+				else moveangle = FixAngle(angle - Angle_90);
+				strafe = STRAFE_LEFT;
+			}
+		}
+		else if (keyboard[Keystates::SIDESTEP_LEFT] || keyboard[Keystates::SIDESTEP_RIGHT]) // sidestep keys
+		{
+
+			//			INFO("SSL");
+							// allow turns in combination with sidesteps
+			//resorted so it makes a little more sense ~christy 7/11/21
+			if (keyboard[Keystates::TURN_RIGHT])
+			{
+					turnrate += (timing->nticks * speed * options.turnrate);
+			}
+			else if (keyboard[Keystates::TURN_LEFT] )
+			{
+					turnrate -= (timing->nticks * speed * options.turnrate);
+			}
+			else if (mouse_look.looking) //if key for mouselook is pressed
+			{
+				if (mouse.MouseXorYOverThree()) // and house relative cords are equal or over 3
+				{
+					turnrate -= (timing->nticks * speed * options.turnrate/2 * -mouse.GetPosX()); //get turn rate
+					mouse.MouseXorYBoolSet(false); //manually set bool for mouse check to false;
+					mouse.SetPosX(0); // set cord back to zero
+				}
+			}
+
+			if (turnrate > (options.turnrate * speed))
+				turnrate = options.turnrate * speed;
+			else if (turnrate < -(options.turnrate * speed))
+				turnrate = -options.turnrate * speed;
+			angle = FixAngle(angle + (int)(turnrate));
+			moveangle = angle;
+
+			if (keyboard[Keystates::SIDESTEP_RIGHT])
+			{ // handle angles for combined strafe / forwards / backwards move
+				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward)
+					moveangle = FixAngle(angle + Angle_45);
+				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward*/ || forced_move.backward)
+					moveangle = FixAngle(moveangle - Angle_45);
+				else moveangle = FixAngle(moveangle + Angle_90);
+				strafe = STRAFE_RIGHT;
+			}
+
+			if (keyboard[Keystates::SIDESTEP_LEFT])
+			{ // handle angles for combined strafe / forwards / backwards move
+				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward)
+					moveangle = FixAngle(angle - Angle_45);
+				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward */ || forced_move.backward)
+					moveangle = FixAngle(moveangle + Angle_45);
+				else moveangle = FixAngle(moveangle - Angle_90);
+				strafe = STRAFE_LEFT;
+			}
+
+		}
+		else // plain old turning
+		{
+			if (!spin)
+				keyboard[Keystates::TURN_RIGHT] = 0;
+
+			//check if mousekey is pressed, and equal or over 3 relative cords
+			if (mouse_look.looking && mouse.MouseXorYOverThree())/* || mouse_move.right || mouse_look.right*/
+			{
+				//calc turn rate
+					turnrate += (timing->nticks * speed * options.turnrate/2 * mouse.GetPosX());
+					//clean up mouse bool=false cord = 0;
+					mouse.MouseXorYBoolSet(false);
+					mouse.SetPosX(0);
+			}
+			else if (keyboard[Keystates::TURN_RIGHT] || forced_move.right)
+			{
+				turnrate += (timing->nticks * speed * options.turnrate);
+			}
+			else if (keyboard[Keystates::TURN_LEFT] || forced_move.left) /* || mouse_move.left || mouse_look.left */
+			{
+				turnrate -= (timing->nticks * speed * options.turnrate);
+			}
+			else 
+			{
+				turnrate = 0;
+			}
+
+			if (turnrate > (options.turnrate * speed))
+				turnrate = options.turnrate * speed;
+			else if (turnrate < -(options.turnrate * speed))
+				turnrate = -options.turnrate * speed;
+			angle = FixAngle(angle + (int)(turnrate));
+			moveangle = angle;
+		}
+	}
+
+
+	if (move && (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward))
+		velocity = MAXWALK;
+	else if (move && (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward */ || forced_move.backward))
+		velocity = -MAXWALK;
+	else if (move && ((keyboard[Keystates::SIDESTEP_RIGHT] || keyboard[Keystates::SIDESTEP_LEFT]) ||
+		((keyboard[Keystates::STRAFE] || forced_move.strafe) &&
+			(keyboard[Keystates::TURN_RIGHT] /* || mouse_move.right*/ || forced_move.right
+				|| keyboard[Keystates::TURN_LEFT] /*||  mouse_move.left */ || forced_move.left))))
+		velocity = MAXSTRAFE;
+	else if ((z > xheight - (0.1 * physht)) && (z < xheight + (0.1 * physht)))
+	{
+		if (velocity > 0)
+		{
+			velocity -= MAXWALK / 6;
+			if (velocity < 0)
+				velocity = 0.0f;
+		}
+		else if (velocity < 0)
+		{
+			velocity += MAXWALK / 6;
+
+			if (velocity > 0)
+				velocity = 0.0f;
+		}
+	}
+	if (velocity)
+	{
+		lastRoom = room;
+		move_result_t res;
+		if (strafe != NO_STRAFE)
+		{ // make sure deceleration doesn't drag player forward after a strafe
+			MoveActor(this, moveangle, velocity * timing->nticks * speed, MOVE_NORMAL, &res);
+			velocity = 0.0f;
+		}
+		else
+			MoveActor(this, moveangle, velocity * timing->nticks * speed, MOVE_NORMAL, &res);
+		if (flags & ACTOR_FLY)
+		{
+			if (res.hit == HIT_FLOOR || res.hit == HIT_WALL || res.hit == HIT_CEILING || res.hit == HIT_ACTOR)
+			{
+				num_fly_collides++;
+				velocity = -velocity;
+			}
+			else
+			{
+				num_fly_collides = 0;
+			}
+
+
+			if (num_fly_collides >= 20)
+			{
+				RemoveTimedEffect(LyraEffect::PLAYER_FLYING);
+				num_fly_collides = 0;
+			}
+		}
+		if (free_moves)
+			free_moves--;
+
+		///_tprintf("setting room...\n");
+		this->SetRoom(old_x, old_y);
+		if (options.network && gs->LoggedIntoGame() && (lastRoom == room) && // didn't change room; presend?
+			((velocity > 0 && old_velocity == 0)))
+			gs->SendPositionUpdate(TRIGGER_MOVE);
+		if ((z == xheight) && options.footsteps && animate &&
+			((velocity >= MAXWALK) || (velocity <= -MAXWALK)) &&
+			!(flags & ACTOR_SOULSPHERE) && !(flags & ACTOR_TRANSFORMED))
+		{	// footstep possible
+			if (step_frame == 6)
+			{
+				if (this->InWater())
+					cDS->PlaySound(LyraSound::WATER_STEP_1, x, y, false);
+				else
+					cDS->PlaySound(LyraSound::PLAYER_STEP_1, x, y, false);
+				last_footstep = LyraTime();
+			}
+			else if (step_frame == 2)
+			{
+				if (this->InWater())
+					cDS->PlaySound(LyraSound::WATER_STEP_2, x, y, false);
+				else
+					cDS->PlaySound(LyraSound::PLAYER_STEP_2, x, y, false);
+				last_footstep = LyraTime();
+			}
+		}
+		this->PerformedAction();
+	}
+	else if (options.network && gs->LoggedIntoGame() && old_velocity)
+		// preupdate for slowdown
+		gs->SendPositionUpdate(TRIGGER_MOVE);
+
+	if (!was_in_water && this->InWater() && !(flags & ACTOR_SOULSPHERE) &&
+		((z > xheight - (.1 * physht)) && (z < xheight + (.1 * physht))))
+		cDS->PlaySound(LyraSound::ENTER_WATER, x, y, false);
+
+	if (keyboard[Keystates::TRIP] && move)
+	{
+		keyboard[Keystates::TRIP] = 0;
+		//_tprintf("checking trip...\n");
+		this->PerformedAction();
+		MoveActor(this, angle, MANUAL_TRIP_DISTANCE, MOVE_TRIP);
+	}
+
+	if (reset_speed)
+	{
+		vertical_tilt_float += reset_speed;
+		if (reset_speed < 0 && vertical_tilt_float <= (vertical_tilt_origin) ||
+			reset_speed > 0 && vertical_tilt_float >= (vertical_tilt_origin))
+		{
+			reset_speed = 0.0f;
+			vertical_tilt_float = (float)(vertical_tilt_origin);
+		}
+	}
+	else if (move && (keyboard[Keystates::LOOK_DOWN]))// look down //simplified ~christy 7/11/21
+	{
+		vertical_tilt_float -= timing->nticks * (float)UPDOWNVEL;
+	}
+	else if (move && (keyboard[Keystates::LOOK_UP]))
+	{
+		vertical_tilt_float += timing->nticks * (float)UPDOWNVEL;
+	}
+
+	else if (move && mouse_look.looking) //if movement is possible and mosuelook key is still true
+	{
+		if (mouse.MouseXorYOverThree()) //check mouse relative cords
+		{
+			//set tilt to up or down based on ticks value for updown, and mosue pos y
+			vertical_tilt_float -= timing->nticks * (float)UPDOWNVEL * mouse.GetPosY();
+			mouse.SetPosY(0); // reset pos 0
+			mouse.MouseXorYBoolSet(false); // reset bool for mouse over/under 2
+		}
+	}
+	
+	if (vertical_tilt_float < -physht)
+	{
+		vertical_tilt_float = (-physht);
+	}
+	else if (vertical_tilt_float > max_vertical_tilt + physht)
+	{
+		vertical_tilt_float = max_vertical_tilt + physht; // ????
+		reset_speed = 0.0f;
+	}
+	
+	vertical_tilt = (long)vertical_tilt_float;
+
+	if ((z > xheight - (.1*physht)) && ((z < xheight + (.1*physht)) || (flags & ACTOR_FLY)) &&
+		keyboard[Keystates::JUMP] && move)
+	{
+		if (options.network)
+			gs->SetJump();
+		keyboard[Keystates::JUMP] = 0;
+		vertforce = -40.0f;
+		jumped = true;
+		if (flags & ACTOR_MEDITATING) // expire meditation on jump
+			this->RemoveTimedEffect(LyraEffect::PLAYER_MEDITATING);
+		player->PerformedAction();
+	}
+
+	return true;
+}
+
+void cPlayer::PerformedAction(void)
+{
+	if (flags & ACTOR_MEDITATING) // expire meditation on move
+		this->RemoveTimedEffect(LyraEffect::PLAYER_MEDITATING);
+	if (arts->Casting() || arts->Waiting())
+		arts->CancelArt();
+	waving = false;
+#ifndef PMARE // pmares regen like players, continually
+#ifndef AGENT
+	// Darkmares in sanctuary need to *not* reset their next_heal counter so they'll continue to get thrashed
+	// even when they move
+	if (!((this->GetAccountType() == LmAvatar::ACCT_DARKMARE) && (level->Rooms[this->Room()].flags & ROOM_SANCTUARY)))
+		next_heal = LyraTime() + HEAL_INTERVAL;
+#endif
+#endif
+	showing_map = false;
+
+	return;
+}
+
+void cPlayer::ApplyAvatarArmor(int art_level, int sm_plat, lyra_id_t caster_id)
+{
+	// no armor for non-soulmaster initiated evokes
+	if (sm_plat <= 0) return;
+
+	// no armor buff if we're not in the same room as the caster
+	if (this->ID() != caster_id) {
+		cNeighbor *n = arts->LookUpNeighbor(caster_id);
+		if (n->Room() != this->Room()) return;
+	}
+
+	int duration = 3000 + ((art_level / 10) * 1000);
+	// the avatar armor has a base of 3%
+	int new_armor_strength = sm_plat + 3;
+
+	// only modify the shield strength if it's better
+	if (new_armor_strength > avatar_armor_strength)
+		avatar_armor_strength = new_armor_strength;
+
+	player->SetTimedEffect(LyraEffect::PLAYER_SHIELD, duration, caster_id, EffectOrigin::ART_EVOKE);
+}
+
+void cPlayer::ApplyCrippleEffect(int pmsg, int art_level, int fs_plat, lyra_id_t caster_id)
+{
+	// only fatesenders can cripple
+	if (fs_plat <= 0) return;
+
+	int duration_mod = 0;
+	bool mass_art = false;
+	switch (pmsg)
+	{
+	case RMsg_PlayerMsg::DARKNESS:
+	case RMsg_PlayerMsg::HYPNOTIC_WEAVE:
+	case RMsg_PlayerMsg::FIRESTORM:
+	case RMsg_PlayerMsg::RAZORWIND:
+	case RMsg_PlayerMsg::TEMPEST:
+	{
+		mass_art = true;
+	}
+	case RMsg_PlayerMsg::BLIND:
+	case RMsg_PlayerMsg::DEAFEN:
+	case RMsg_PlayerMsg::PARALYZE:
+	case RMsg_PlayerMsg::SCARE:
+	case RMsg_PlayerMsg::STAGGER:
+	{
+		duration_mod = art_level / 10;
+		break;
+	}
+	default: return;
+	}
+
+	if (duration_mod > 0)
+	{
+		int duration = 3000;
+		int origin;
+		if (mass_art)
+		{
+			// mass evokes get a small drop in effective duration
+			origin = EffectOrigin::MASS_EVOKE;
+			duration += duration_mod * 500;
+		}
+		else
+		{
+			origin = EffectOrigin::ART_EVOKE;
+			duration += duration_mod * 1000;
+		}
+
+		// effect strength is equal to the focal plat level
+		if (fs_plat > cripple_strength)
+			cripple_strength = fs_plat;
+
+		player->SetTimedEffect(LyraEffect::PLAYER_CRIPPLE, duration, caster_id, origin);
+	}
+}
+
+DWORD cPlayer::CalculateBreakthrough(DWORD duration, int effect_origin)
+{
+	int modifier;
+
+	switch (effect_origin)
+	{
+	case EffectOrigin::ART_EVOKE:
+		modifier = 4;
+		break;
+	case EffectOrigin::MISSILE:
+		modifier = 3;
+		break;
+	case EffectOrigin::MASS_EVOKE:
+		modifier = 2;
+		break;
+	default:
+		modifier = 1;
+	}
+
+	DWORD breakthrough_amt = duration * modifier;
+
+#ifdef UL_DEV
+	strcpy(disp_message, "Breaking through %ld seconds of your effect from a duration of %ld seconds and an origin modifier of %d.");
+	_stprintf(message, disp_message, (breakthrough_amt / 1000), (duration / 1000), modifier);
+	display->DisplayMessage(message, false);
+#endif
+
+	return breakthrough_amt;
+}
+
+// set up, or extend, a time-based effect; returns true if
+// applied, or false if rejected for whatever reason
+bool cPlayer::SetTimedEffect(int effect, DWORD duration, lyra_id_t caster_id, int effect_origin)
+{
+	if (duration <= 0)
+		return false;
+	cNeighbor* n = caster_id != Lyra::ID_UNKNOWN ? arts->LookUpNeighbor(caster_id) : NO_ACTOR;
+	bool invisGMBreakthru = false;
+	if (n != NO_ACTOR) {
+		invisGMBreakthru = n->Avatar().Hidden();
+	}
+	else if (caster_id == DUMMY_PID_FOR_DREAMWIDE_EVOKES) {
+		invisGMBreakthru = true; // always breakthru on universal evokes for now.
+	}
+#ifdef GAMEMASTER
+#ifdef AGENT
+	if (((this->AvatarType() >= Avatars::AGOKNIGHT) || (this->AvatarType() < Avatars::MIN_NIGHTMARE_TYPE)) &&
+		timed_effects->harmful[effect])
+		return false;
+#else
+	if (options.invulnerable && timed_effects->harmful[effect])
+		return false;
+#endif
+#endif
+	bool spammy_behaviour = effect_origin != EffectOrigin::AE_ITEM || (rand() % 10 == 0);
+	// only effect on soulsphere is soulevoke
+	if ((effect != LyraEffect::PLAYER_SOULEVOKE) && (flags & ACTOR_SOULSPHERE))
+	{
+		LoadString(hInstance, IDS_NO_SSPHERE, disp_message, sizeof(disp_message));
+		if (caster_id == this->ID())
+			display->DisplayMessage(disp_message);
+		return false;
+	}
+
+	switch (effect) {
+	case LyraEffect::PLAYER_CURSED: {
+		// check to see if protection is in effect
+		if (flags & ACTOR_PROT_CURSE && !invisGMBreakthru)
+		{
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_PLAYER_CURSE_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+			//  Curse and Protection offset and partially cancel
+			timed_effects->expires[LyraEffect::PLAYER_PROT_CURSE] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}
+		// Implementing Curse Effect
+		// I also added some debugging checks for this
+		// Fixing Curse effect to Balthiir's specs
+		// Make sure that this strength computation is in the release
+		// I recalculated the strength of curse and made it a buildable effect - Ajax
+		int new_strength = (duration / 20000) + 1;
+		new_strength = new_strength + curse_strength;
+
+		if (new_strength > 50) new_strength = 50;
+		// Note that these messages are now debug ONLY
+#ifdef UL_DEV
+		LoadString(hInstance, IDS_CURSE_CHANGE, disp_message, sizeof(disp_message));
+		_stprintf(message, disp_message, new_strength, curse_strength);
+		display->DisplayMessage(message, false);
+#endif
+		if (new_strength > curse_strength) {
+			curse_strength = new_strength;
+#ifdef UL_DEV
+			LoadString(hInstance, IDS_CURSE_STRONGER, disp_message, sizeof(disp_message));
+			_stprintf(message, disp_message, curse_strength);
+			display->DisplayMessage(message, false);
+#endif
+		} break;
+	}
+	case LyraEffect::PLAYER_PARALYZED: {
+		if (flags & ACTOR_FREE_ACTION && !invisGMBreakthru)
+		{
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_PLAYER_PARALYZE_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+			// Paralyze and Free Action now offset and partially cancel
+			timed_effects->expires[LyraEffect::PLAYER_PROT_PARALYSIS] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}
+
+#ifdef PMARE
+		if (effect_origin == EffectOrigin::ART_EVOKE || (rand() % 2 == 0))
+		{
+			// Give the pmare FA and Reflect if they are paralyzed )
+			this->SetTimedEffect(LyraEffect::PLAYER_PROT_PARALYSIS, 3600000, playerID, EffectOrigin::ART_EVOKE);
+
+			if (!(flags & timed_effects->actor_flag[LyraEffect::PLAYER_REFLECT]))
+			{
+				this->SetTimedEffect(LyraEffect::PLAYER_REFLECT, 3600000, playerID, EffectOrigin::ART_EVOKE);
+			}
+		}
+#endif
+
+		// If actually paralyzed, cancel any current evoke.
+		arts->CancelArt();
+	}
+									   break;
+	case LyraEffect::PLAYER_DRUNK: {
+		if (flags & ACTOR_FREE_ACTION && !invisGMBreakthru)
+		{
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_PLAYER_STAGGER_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+			// Stagger and Free Action now offset and partially cancel
+			timed_effects->expires[LyraEffect::PLAYER_PROT_PARALYSIS] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}} break;
+	case LyraEffect::PLAYER_FEAR: {
+		if (flags & ACTOR_PROT_FEAR && !invisGMBreakthru)
+		{
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_PLAYER_FEAR_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+			// Fear and Resist Fear now offset and partially cancel
+			timed_effects->expires[LyraEffect::PLAYER_PROT_FEAR] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}} break;
+	case LyraEffect::PLAYER_WALK: {
+		if (flags & ACTOR_SOUL_SHIELDED && !invisGMBreakthru)
+		{
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_ENFEEBLE_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+
+			timed_effects->expires[LyraEffect::PLAYER_WALK] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}
+	} break;
+	case LyraEffect::PLAYER_BLIND: {
+		if (flags & ACTOR_DETECT_INVIS && !invisGMBreakthru)
+		{
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_PLAYER_BLIND_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+			// Blind and Vision now offset and partially cancel
+			timed_effects->expires[LyraEffect::PLAYER_DETECT_INVISIBLE] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}}
+								   break;
+								   //  Players must know how to Recall, Transform, etc. in case talisman causes effect
+								   // Recommend moving this back to cArts and calling it from here
+	case LyraEffect::PLAYER_RECALL: {
+		this->SetRecall(this->x, this->y, this->angle, level->ID());
+		gs->SendPlayerMessage(0, RMsg_PlayerMsg::RECALL, 0, 0);
+		LoadString(hInstance, IDS_RECALL, disp_message, sizeof(disp_message));
+		display->DisplayMessage(disp_message, false);
+	} break;
+	case LyraEffect::PLAYER_GKSHIELD: {
+		this->SetBulwark(100);
+		break;
+	}
+	case LyraEffect::PLAYER_TRANSFORMED: {
+		if (this->flags & ACTOR_TRANSFORMED) { // 2nd activation - remove
+			this->RemoveTimedEffect(LyraEffect::PLAYER_TRANSFORMED);
+			return false;
+		}
+		else {
+			LmAvatar new_avatar;
+			//new_avatar.Init((player->Skill(Arts::NIGHTMARE_FORM)/20 + 1), 0, 0, 0, 0, 0, Guild::NO_GUILD, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+			new_avatar.Init(Avatars::EMPHANT, 0, 0, 0, 0, 0, Guild::NO_GUILD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+			this->SetTransformedAvatar(new_avatar);
+		}
+	} break;
+	case LyraEffect::PLAYER_RETURN: {
+		if (this->flags & ACTOR_RETURN) { // 2nd activation - return
+			if (this->Teleport(this->ReturnX(), this->ReturnY(), this->ReturnAngle(), this->ReturnLevel())) {
+				this->RemoveTimedEffect(LyraEffect::PLAYER_RETURN);
+				return(false);
+			}
+			else { // teleport failed - replace dreamsoul
+				this->SetCurrStat(arts->Stat(Arts::RETURN), arts->Drain(Arts::RETURN), SET_RELATIVE, playerID);
+			}
+
+			return(true);
+		}
+		else { // 1st activation - mark location
+			this->SetReturn(this->x, this->y, this->angle, level->ID());
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::RETURN, 0, 0);
+		}
+	} break;
+	case LyraEffect::PLAYER_REFLECT: {
+		if (this->flags & ACTOR_REFLECT) { // 2nd activation - reflect
+			this->RemoveTimedEffect(LyraEffect::PLAYER_REFLECT);
+			return(true);
+		}
+		else {
+			// 5-50% chance (starts at 5%, increases 5% per plateau)
+			int new_strength = duration / 6000;
+			if (new_strength > 50) new_strength = 50;
+
+			reflect_strength = new_strength;
+
+#ifdef GAMEMASTER
+			// give GMs a 10 point boost to reflect strength
+			reflect_strength += 10;
+#endif
+
+#ifdef UL_DEBUG
+			_stprintf(message, "Used reflect of strength %d from duration of %d (debug MSG Only)", reflect_strength, duration);
+			display->DisplayMessage(message, false);
+#endif
+		}
+	} break;
+	case LyraEffect::PLAYER_SOULEVOKE: {
+		if (!(player->flags & ACTOR_SOULSPHERE))
+		{
+			LoadString(hInstance, IDS_SOULEVOKE_SOULSPHERE_ONLY, disp_message, sizeof(disp_message));
+			_stprintf(message, disp_message, "Soulevoke");
+			display->DisplayMessage(message, false);
+			return(false);
+		}
+	} break;
+	case LyraEffect::PLAYER_MIND_BLANKED: {
+		if (this->flags & ACTOR_MIND_BLANKED)
+		{
+			this->RemoveTimedEffect(LyraEffect::PLAYER_MIND_BLANKED);
+			return(true);
+		}
+		else
+		{
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::MIND_BLANK, 1, 0);
+		}
+	} break;
+
+	case LyraEffect::PLAYER_PEACE_AURA: {
+		if (this->flags & ACTOR_PEACE_AURA && effect_origin != EffectOrigin::AE_ITEM) { // 2nd evoke - Peace Aura
+			this->RemoveTimedEffect(LyraEffect::PLAYER_PEACE_AURA);
+			return(true);
+		}
+	} break;
+	case LyraEffect::PLAYER_INVISIBLE: {
+		if (this->flags & ACTOR_INVISIBLE) { // 2nd activation - remove
+			this->RemoveTimedEffect(LyraEffect::PLAYER_INVISIBLE);
+			return false;
+		}
+	}
+									   break;
+	case LyraEffect::PLAYER_BLEED: {
+		if (safezone)
+		{
+			LoadString(hInstance, IDS_PLAYER_BLEED_DEFLECT, disp_message, sizeof(disp_message));
+			display->DisplayMessage(disp_message);
+			return false;
+		}
+		else if (this->flags & ACTOR_PROT_CURSE) {
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_PLAYER_BLEED_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+			timed_effects->expires[LyraEffect::PLAYER_PROT_CURSE] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}
+		if (caster_id != player->ID())
+
+			last_bleeder = caster_id;
+	} break;
+
+	case LyraEffect::PLAYER_POISONED: {
+		if (safezone)
+		{
+			LoadString(hInstance, IDS_PLAYER_POISON_DEFLECT, disp_message, sizeof(disp_message));
+			display->DisplayMessage(disp_message);
+			return false;
+		}
+		else if (this->flags & ACTOR_NO_POISON)
+		{
+			if (spammy_behaviour)
+			{
+				LoadString(hInstance, IDS_PLAYER_POISON_DEFLECT, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+
+			timed_effects->expires[LyraEffect::PLAYER_NO_POISON] -= CalculateBreakthrough(duration, effect_origin);
+			return false;
+		}
+
+		if (caster_id != player->ID())
+			last_poisoner = caster_id;
+
+		int new_strength = (duration / 60000) + 1;
+		if (new_strength > 10) new_strength = 10;
+
+		if (new_strength > poison_strength)
+			poison_strength = new_strength;
+
+		// set the maximum duration after the strength calculation for pmare/dmare
+		if (duration > 60000 && (player->IsPMare() || player->GetAccountType() == LmAvatar::ACCT_DARKMARE))
+		{
+			duration = 60000;
+		}
+	}
+									  break;
+	case LyraEffect::PLAYER_SPIN:
+	{
+		break;
+	}
+
+	default:
+		break;
+	}
+
+
+	if (flags & timed_effects->actor_flag[effect])
+	{
+		if ((effect == LyraEffect::PLAYER_POISONED && (player->IsPMare() || player->GetAccountType() == LmAvatar::ACCT_DARKMARE)) ||
+			effect == LyraEffect::PLAYER_GKSHIELD)
+		{
+			// can't exceed duration of poison for pmares and dmares
+			timed_effects->expires[effect] = LyraTime() + duration;
+		}
+		else
+		{
+			// regular effects increase by half the standard rate
+			timed_effects->expires[effect] += (int)(duration / 2);
+		}
+		if (timed_effects->more_descrip[effect] && spammy_behaviour)
+			display->DisplayMessage(timed_effects->more_descrip[effect]);
+		// don't display additional shield messages
+		else if (effect != LyraEffect::PLAYER_SHIELD && spammy_behaviour)
+		{
+			LoadString(hInstance, IDS_DURATION_EXTENDED, disp_message, sizeof(disp_message));
+			_stprintf(message, disp_message, timed_effects->name[effect]);
+			display->DisplayMessage(message);
+		}
+	}
+	else // new effect
+	{
+		timed_effects->expires[effect] = LyraTime() + duration;
+		if (timed_effects->start_descrip[effect])
+			display->DisplayMessage(timed_effects->start_descrip[effect]);
+
+		flags = flags | timed_effects->actor_flag[effect];
+		// Nectar's tweak
+		if (effect == LyraEffect::PLAYER_FEAR)
+			cDS->PlaySound(LyraSound::SCARE_LOOP, x, y, false);
+		else if (effect == LyraEffect::PLAYER_BLIND)
+			cDS->PlaySound(LyraSound::BLIND_LOOP, x, y, false);
+		else if (effect == LyraEffect::PLAYER_DEAF)
+			cDS->PlaySound(LyraSound::DEAFEN_LOOP, x, y, false);
+
+	}
+	return true;
+}
+
+int cPlayer::TeacherID(void)
+{
+	if (this->CurrentAvatarType() >= Avatars::MIN_NIGHTMARE_TYPE)
+		return 0;
+	else
+		return avatar.Teacher();
+}
+
+// returns account type
+unsigned int cPlayer::GetAccountType(void)
+{
+	return avatar.AccountType();
+}
+
+
+void cPlayer::RemoveTimedEffect(int effect)
+{
+
+	/*
+	#ifdef AGENT
+		if ((effect == LyraEffect::PLAYER_DETECT_INVISIBLE) && (avatar.AvatarType() >= Avatars::SHAMBLIX))
+			return; // Shamblix and Horron agents never lose Vision
+	#endif
+	*/
+	if (!(flags & timed_effects->actor_flag[effect]))
+		return; // effect not active
+
+	flags = flags & ~(timed_effects->actor_flag[effect]);
+	timed_effects->expires[effect] = 0;
+
+	// in case we are invis AND chamele'd, no re-visible message
+	if (((effect == LyraEffect::PLAYER_CHAMELED) && (flags & ACTOR_INVISIBLE)) ||
+		((effect == LyraEffect::PLAYER_INVISIBLE) && (flags & ACTOR_CHAMELED)))
+		return;
+
+	if (timed_effects->expire_descrip[effect])
+		display->DisplayMessage(timed_effects->expire_descrip[effect]);
+	// other effects of expiration go here
+	if (effect == LyraEffect::PLAYER_TRAIL)
+	{	// delete trail markers at expiration of trail
+		for (cActor *a = actors->IterateActors(INIT); a != NO_ACTOR; a = actors->IterateActors(NEXT))
+			if ((a->Type() == ORNAMENT) && (a->CurrBitmap(0) == LyraBitmap::TRAIL_MARKER))
+				a->SetTerminate();
+		actors->IterateActors(DONE);
+	}
+	// I'm not sure why this code is malfunctioning in 215. It works for me.
+	if (effect == LyraEffect::PLAYER_TRANSFORMED)
+	{	// go back to true form
+		this->SetBitmapInfo(avatar.BitmapID());
+		if (options.network)
+			gs->AvatarChange(avatar, false);
+		if (avatar.AvatarType() >= Avatars::MIN_NIGHTMARE_TYPE)
+			avatar_poses = mare_poses;
+		else
+			avatar_poses = dreamer_poses;
+		if (!forming && !dissolving)
+			currframe = avatar_poses[STANDING].start_frame;
+		cp->AddAvatar();
+	}
+	if (effect == LyraEffect::PLAYER_FEAR)
+		cDS->StopSound(LyraSound::SCARE_LOOP);
+	else if (effect == LyraEffect::PLAYER_BLIND)
+		cDS->StopSound(LyraSound::BLIND_LOOP);
+	else if (effect == LyraEffect::PLAYER_DEAF)
+		cDS->StopSound(LyraSound::DEAFEN_LOOP);
+	else if (effect == LyraEffect::PLAYER_MIND_BLANKED)
+	{
+		if (options.network && gs)
+		{
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::MIND_BLANK, 0, 0);
+		}
+	}
+	else if (effect == LyraEffect::PLAYER_CURSED)
+		curse_strength = 0;
+
+	else if (effect == LyraEffect::PLAYER_POISONED) {
+		last_poisoner = Lyra::ID_UNKNOWN;
+		poison_strength = 0;
+	}
+	else if (effect == LyraEffect::PLAYER_BLEED) {
+		last_bleeder = Lyra::ID_UNKNOWN;
+	}
+	else if (effect == LyraEffect::PLAYER_REFLECT)
+		reflect_strength = 0;
+	else if (effect == LyraEffect::PLAYER_CRIPPLE)
+		cripple_strength = 0;
+	else if (effect == LyraEffect::PLAYER_SHIELD)
+		avatar_armor_strength = 0;
+	else if (effect == LyraEffect::PLAYER_GKSHIELD)
+		SetBulwark(0);
+	return;
+};
+
+
+// check on time based timed_effects
+void cPlayer::CheckStatus(void)
+{
+	DWORD curr_time = LyraTime();
+	int i, stat, value, view, dist;
+
+	//_tprintf("now: %d expire: %d\n",LyraTime(), timed_effects->expires[LyraEffect::PLAYER_FEAR]);
+
+	evokingFX.Update();
+	evokedFX.Update();
+
+	// check to see if we've healed naturally
+	if ((LyraTime() > next_heal) && !(flags & ACTOR_SOULSPHERE) && (level->Sectors[this->sector]->tag != SECTOR_NO_REGEN))
+	{	  // raise selected if under max; else raise lowest
+#ifdef AGENT  // true nightmares regen fast
+		value = this->AvatarType();
+#else 
+#ifdef PMARE // regen fast if boggo or ago
+		switch (this->AvatarType())
+		{
+		case Avatars::BOGROM:
+			value = 4;
+			break;
+		case Avatars::AGOKNIGHT:
+			value = 3;
+			break;
+		default:
+			value = 2;
+}
+#else  // dreamers regen slowly
+		if (flags & ACTOR_MEDITATING) {
+			value = 2 + (player->Skill(Arts::MEDITATION) / 10);
+			// chip at poison
+			if (flags & ACTOR_POISONED)
+				timed_effects->expires[LyraEffect::PLAYER_POISONED] -= ((player->Skill(Arts::MEDITATION) / 10) * 20 * 1000); // med plat * 20sec
+
+		}
+		else
+			value = 1;
+#endif
+#endif
+		//		if ((avatar.AvatarType() >= Avatars::MIN_NIGHTMARE_TYPE) &&
+				// Note that there is corresponding code in cPlayer::PerformedAction() to make the next_heal counter *not* get
+				// reset by movement when dark mares are in sanctuary (pmares and agents never reset the next_heal
+				// counter).
+		if (((this->GetAccountType() == LmAvatar::ACCT_PMARE) || (this->GetAccountType() == LmAvatar::ACCT_DARKMARE) ||
+			(this->GetAccountType() == LmAvatar::ACCT_NIGHTMARE)) &&
+			(level->Rooms[this->Room()].flags & ROOM_SANCTUARY))
+		{ // all mares get thrashed in sanct
+			value = (avatar.AvatarType() - Avatars::MIN_NIGHTMARE_TYPE + 1)*-5;
+			lyra_id_t attacker = playerID;
+
+			if (last_attacker_id != Lyra::ID_UNKNOWN)
+				attacker = last_attacker_id;
+
+			this->SetCurrStat(Stats::DREAMSOUL, value, SET_RELATIVE, attacker);
+			LoadString(hInstance, IDS_SANCTUARY_HURTS, message, sizeof(message));
+			display->DisplayMessage(message);
+
+		}
+
+		// 	else if (stats[selected_stat].current < stats[selected_stat].max)
+		else if (this->CurrStat(selected_stat) < this->MaxStat(selected_stat))
+			this->SetCurrStat(selected_stat, value, SET_RELATIVE, playerID);
+		else
+		{
+			stat = selected_stat;
+			for (i = 0; i < NUM_PLAYER_STATS; i++)
+				if ((stats[i].max - stats[i].current) >
+					(stats[stat].max - stats[stat].current))
+					stat = i;
+			if (stat != selected_stat)
+				this->SetCurrStat(stat, value, SET_RELATIVE, playerID);
+		}
+		next_heal = LyraTime() + HEAL_INTERVAL;
+		}
+
+	if ((flags & ACTOR_POISONED) && (LyraTime() > next_poison) && !(flags & ACTOR_MEDITATING))
+	{	 // sap dreamsoul...
+		this->SetCurrStat(Stats::DREAMSOUL, -((rand() % poison_strength) + 1), SET_RELATIVE, last_poisoner);
+		next_poison = LyraTime() + POISON_INTERVAL;
+	}
+
+	if ((flags & ACTOR_BLEED) && (LyraTime() > next_bleed))
+	{	 // sap dreamsoul...
+		this->SetCurrStat(Stats::DREAMSOUL, -1, SET_RELATIVE, last_bleeder);
+		next_bleed = LyraTime() + BLEED_INTERVAL;
+	}
+
+	if ((flags & ACTOR_REGENERATING) && (LyraTime() > next_regeneration))
+	{	 // sap one of all stats
+
+		this->SetCurrStat(Stats::DREAMSOUL, +1, SET_RELATIVE, playerID);
+		next_regeneration = LyraTime() + HEAL_INTERVAL;
+	}
+
+	int time = LyraTime();
+	if (time > next_sector_tag)
+	{
+		switch (level->Sectors[this->sector]->tag)
+		{
+		case SECTOR_WILLPOWER:
+			this->SetCurrStat(Stats::WILLPOWER, +1, SET_RELATIVE, playerID);
+			break;
+		case SECTOR_INSIGHT:
+			this->SetCurrStat(Stats::INSIGHT, +1, SET_RELATIVE, playerID);
+			break;
+		case SECTOR_RESILIENCE:
+			this->SetCurrStat(Stats::RESILIENCE, +1, SET_RELATIVE, playerID);
+			break;
+		case SECTOR_LUCIDITY:
+			this->SetCurrStat(Stats::LUCIDITY, +1, SET_RELATIVE, playerID);
+			break;
+		case SECTOR_DREAMSOUL:
+			if (!(flags & ACTOR_SOULSPHERE))
+				this->SetCurrStat(Stats::DREAMSOUL, +1, SET_RELATIVE, playerID);
+			break;
+		case SECTOR_DAMAGE:
+			this->SetCurrStat(Stats::DREAMSOUL, -1, SET_RELATIVE, playerID);
+			break;
+			// SECTOR_NO_PLAYER_TP and SECTOR_NO_REGEN are implemented elsewhere
+		case SECTOR_NO_PLAYER_TP:
+		case SECTOR_NO_REGEN:
+		default:
+			break;
+		}
+
+		for (cItem *item = actors->IterateItems(INIT); item != NO_ACTOR; item = actors->IterateItems(NEXT))
+		{
+			if (!item->IsAreaEffectItem())
+				continue;
+
+			if (item->ItemFunction(0) == LyraItem::AREA_EFFECT_FUNCTION && item->NextTick() <= time)
+			{
+				// now apply AOEs we're near - 1/2 dist as Horron pain aura
+				if ((flags & ACTOR_SOULSPHERE) || Avatar().Hidden())
+					continue;
+
+				const void* state = item->Lmitem().StateField(0);
+				lyra_item_area_effect_t aoe;
+				memcpy(&aoe, state, sizeof(aoe));
+				// if it doesn't effect party/self and we're self or in party with caster...
+				if (!aoe.effects_party_and_self() && (aoe.player_id() == player->ID() ||
+					(gs && gs->Party() && gs->Party()->IsInParty(aoe.player_id()))))
+					continue;
+
+				dist = (unsigned int)((item->x - x)*(item->x - x) + (item->y - y)*(item->y - y));
+				unsigned int xy, ht;
+				CalculateDistance(aoe.get_distance(), &xy, &ht);
+				int h1 = z - physht - item->z, h2 = item->z - z;
+				if (dist > xy || h1 > (int)ht || h2 > (int)ht)
+					continue;
+				if (aoe.is_razorwind()) {
+					cDS->PlaySound(LyraSound::RAZORWIND);
+					LoadString(hInstance, IDS_RW_REAPPLIED, disp_message, sizeof(disp_message));
+					display->DisplayMessage(disp_message);
+				}
+				int modifier = CalculateModifier(aoe.damage); // dmg is actually modifier
+				player->SetCurrStat(aoe.stat, modifier, SET_RELATIVE, aoe.player_id());
+				player->SetTimedEffect(aoe.get_effect(), CalculateDuration(aoe.duration), aoe.player_id(), EffectOrigin::AE_ITEM);
+				item->SetNextTick(time + SECTOR_TAG_INTERVAL);
+			}
+			else if (item->ItemFunction(0) == LyraItem::TRIP_FUNCTION) {
+				const void* state = item->Lmitem().StateField(0);
+				int ser = item->Lmitem().Header().Serial();
+				lyra_item_trip_t trip;
+				memcpy(&trip, state, sizeof(trip));
+				frequency_t f = Frequency(trip.frequency);
+				std::map<int, freqtick_t>::iterator it = item_ae_ticks.find(ser);
+				if (f.recurrences > -1 && it != item_ae_ticks.end() && item_ae_ticks[ser].numrecurs >= f.recurrences)
+					continue;
+				if (time >= item->NextTick() && (item->Lmitem().Header().Flags() & LyraItem::FLAG_HASDESCRIPTION))
+				{
+					dist = (unsigned int)((item->x - x)*(item->x - x) + (item->y - y)*(item->y - y));
+					unsigned int xy, ht;
+					CalculateDistance(trip.distance, &xy, &ht);
+					int h1 = z - physht - item->z, h2 = item->z - z;
+					if (dist > xy || h1 > (int)ht || h2 > (int)ht)
+						continue;
+
+					gs->SendItemDescripRequest(item->Lmitem().Header());
+					item_ae_ticks[ser].numrecurs++;
+					if (f.descrip == IDS_ONCE_PER_ROOM)
+						item_ae_ticks[ser].remove_with_room_change = true;
+					else
+						item_ae_ticks[ser].remove_with_room_change = false;
+
+					if (item_ae_ticks[ser].numrecurs < f.recurrences || f.recurrences == -1)
+						item->SetNextTick(time + f.ms_between_recurrences);
+				}
+			}
+			else if (item->ItemFunction(0) == LyraItem::PORTKEY_FUNCTION) {
+				if ((flags & ACTOR_SOULSPHERE) || Avatar().Hidden())
+					continue;
+
+				const void* state = item->Lmitem().StateField(0);
+				lyra_item_portkey_t pkey;
+				memcpy(&pkey, state, sizeof(pkey));
+				dist = (unsigned int)((item->x - x)*(item->x - x) + (item->y - y)*(item->y - y));
+				unsigned int xy, ht;
+				CalculateDistance(pkey.distance, &xy, &ht);
+				int h1 = z - physht - item->z, h2 = item->z - z;
+				if (dist > xy || h1 > (int)ht || h2 > (int)ht)
+					continue;
+				display->DisplayMessage("The portkey whisks you away to parts unknown!");
+				player->Teleport(pkey.x, pkey.y, player->angle, pkey.level_id);
+				break;
+			}
+		}
+		actors->IterateItems(DONE);
+#ifndef AGENT
+		if (!safezone && level->ID() != 1 && !(level->Rooms[room].flags & ROOM_SANCTUARY) && !guild_level &&
+			!(flags & ACTOR_SOULSPHERE) && !Avatar().Hidden())
+		{
+			for (cActor* actor = actors->IterateOthers(INIT); actor != NO_ACTOR; actor = actors->IterateOthers(NEXT))
+			{
+				if (actor->Type() != ORNAMENT)
+					continue;
+				cOrnament* ornament = (cOrnament*)actor;
+				if (!ornament->IsDamagingOrnament())
+					continue;
+				int dist = (int)((ornament->x - x)*(ornament->x - x) + (ornament->y - y)*(ornament->y - y));
+				// OK DO YOUR THING!
+				damaging_ornament_t dmginfo = ornament->GetDamageInfo();
+				unsigned int xy, ht;
+				CalculateDistance(dmginfo.distance_index, &xy, &ht);
+				int h1 = z - physht - ornament->z, h2 = ornament->z - z;
+				if (dist > xy || h1 > (int)ht || h2 > (int)ht)
+					continue;
+
+				if (dmginfo.stat != Stats::NO_STAT)
+				{
+					int mod = CalculateModifier(dmginfo.modifier);
+					player->SetCurrStat(dmginfo.stat, mod, SET_RELATIVE, Lyra::ID_UNKNOWN);
+				}
+
+				if (dmginfo.effect != LyraEffect::NONE)
+				{
+					player->SetTimedEffect(dmginfo.effect, CalculateDuration(dmginfo.duration), Lyra::ID_UNKNOWN, EffectOrigin::AE_ITEM);
+				}
+			}
+			actors->IterateOthers(DONE);
+		}
+#endif
+		next_sector_tag = LyraTime() + SECTOR_TAG_INTERVAL;
+	}
+
+	if ((flags & ACTOR_TRAILING) && (LyraTime() > next_trail))
+	{ // drop trail marker if no others are close to us
+		bool mark = true;
+		for (cActor *a = actors->IterateActors(INIT); a != NO_ACTOR; a = actors->IterateActors(NEXT))
+		{
+			if ((a->Type() == ORNAMENT) && (a->CurrBitmap(0) == LyraBitmap::TRAIL_MARKER) &&
+				(fdist(x, y, a->x, a->y) < MIN_TRAIL_SEPARATION))
+			{
+				mark = false;
+				break;
+			}
+		}
+		actors->IterateActors(DONE);
+		if (mark)
+		{
+			cOrnament* trail_marker = new cOrnament(x, y, 0, angle, ACTOR_NOCOLLIDE, LyraBitmap::TRAIL_MARKER);
+			trail_marker->flags = trail_marker->flags | ACTOR_NOCOLLIDE;
+		}
+		next_trail = LyraTime() + TRAIL_INTERVAL;
+	}
+
+	for (i = 0; i < NUM_TIMED_EFFECTS; i++)
+	{	// do not removed timed effects in mission boards to avoid perma mind blank!
+		if (options.network && gs && !gs->LoggedIntoLevel())
+			break;
+		if ((flags & timed_effects->actor_flag[i]) && (curr_time > timed_effects->expires[i]))
+			this->RemoveTimedEffect(i);
+	}
+
+	if ((flags & ACTOR_SOULSPHERE) &&
+		(level->Rooms[room].flags & ROOM_SANCTUARY) &&
+		(player->Avatar().AvatarType() < Avatars::MIN_NIGHTMARE_TYPE))
+		this->ReformAvatar();
+
+#if defined PMARE
+
+	if ((flags & ACTOR_SOULSPHERE))
+	{
+		Sleep(1000);
+		this->Teleport(329, 1366, -90, 44);
+	}
+
+	// PMare Threshold is a sanctuary to pmares
+	if ((flags & ACTOR_SOULSPHERE) && (level->ID() == START_LEVEL_ID))
+		this->ReformAvatar();
+#endif
+
+	if ((flags & ACTOR_SOULSPHERE) &&
+		(this->CurrStat(Stats::DREAMSOUL) > 0))
+		this->ReformAvatar();
+
+#ifdef PMARE
+	unsigned int cur_time = LyraTime();
+	unsigned int sec_diff = (cur_time - collapse_time) / 1000;
+	if ((flags & ACTOR_SOULSPHERE) && (sec_diff > 90))
+		this->SetCurrStat(Stats::DREAMSOUL, this->MaxStat(Stats::DREAMSOUL),
+			SET_ABSOLUTE, playerID);
+#endif
+
+	if (!(player->Avatar().AvatarType() >= Avatars::MIN_NIGHTMARE_TYPE))
+	{
+		if ((LyraTime() > next_nightmare_check) && !(flags & ACTOR_SOULSPHERE) &&
+			!(level->Rooms[this->Room()].flags & ROOM_SANCTUARY))
+		{
+			next_nightmare_check = LyraTime() + NIGHTMARE_CHECK_INTERVAL;
+
+			// check for effects of being too close to monsters
+			for (cNeighbor *n = actors->IterateNeighbors(INIT); n != NO_ACTOR; n = actors->IterateNeighbors(NEXT))
+				if (n->IsMonster())
+				{
+					view = FixAngle((angle - n->angle) + 32) / (Angle_360 / Avatars::VIEWS);
+					if (n->Visible() && (view == 3)) // face-on
+					{ // gaze effects here
+						if ((n->Avatar().AvatarType() == Avatars::SHAMBLIX) &&
+							!(flags & ACTOR_CURSED) && !(flags & ACTOR_PROT_CURSE))
+							arts->ApplyCurse(1, n->ID());
+						if ((n->Avatar().AvatarType() == Avatars::HORRON) &&
+							!(flags & ACTOR_PARALYZED) && !(flags & ACTOR_FREE_ACTION))
+						{
+							arts->ApplyParalyze(Arts::PARALYZE, 2, n->ID());
+							// 						arts->ApplyAbjure(1, n->ID());
+						}
+					}
+					dist = (int)((n->x - x)*(n->x - x) + (n->y - y)*(n->y - y));
+					if (n->Avatar().AvatarType() == Avatars::HORRON)
+					{
+						if ((dist < HORRON_FEAR_DISTANCE) &&
+							!(flags & ACTOR_SCARED) && !(flags & ACTOR_PROT_FEAR))
+							arts->ApplyScare(1, n->ID());
+						if (dist < HORRON_DRAIN_DISTANCE)
+							this->SetCurrStat(Stats::DREAMSOUL, -1, SET_RELATIVE, n->ID());
+					}
+				}
+			actors->IterateNeighbors(DONE);
+		}
+	}
+	return;
+}
+
+int cPlayer::IconBitmap(void)
+{
+	if (forming)
+		return (LyraBitmap::FORMREFORM_EFFECT + currframe);
+	else if (dissolving)
+		return (LyraBitmap::FORMREFORM_EFFECT + effects->EffectFrames(LyraBitmap::FORMREFORM_EFFECT) - currframe);
+	else if (flags & ACTOR_SOULSPHERE)
+		return (LyraBitmap::SOULSPHERE_EFFECT);
+	else
+		return (this->cActor::IconBitmap());
+}
+
+
+// Set current room # to newroom
+void cPlayer::SetRoom(float old_x, float old_y)
+{
+	realmid_t last_room = room;
+	bool new_sanct = false;
+
+	if (level && (level->ID() != NO_LEVEL) && ready)
+	{
+		if ((room < 0) || (room > level->NumRooms()))
+			room = last_room = 0;
+
+		room = level->Sectors[sector]->room;
+
+		if (room == 0)
+		{
+			room = last_room;
+			level->Sectors[sector]->room = room;
+			LoadString(hInstance, IDS_NOROOM0, temp_message, sizeof(temp_message));
+			_stprintf(errbuf, temp_message, sector, level->ID());
+			NONFATAL_ERROR(errbuf);
+		}
+
+		if (gs && gs->LoggedIntoLevel())
+		{
+			// do sanctuary message stuff
+			if (room && (level->Rooms[room].flags & ROOM_SANCTUARY))
+				new_sanct = true;
+
+			if (((room || last_room)) && new_sanct && !old_sanct)
+			{
+				LoadString(hInstance, IDS_ENTER_SANCTUARY, message, sizeof(message));
+				display->DisplayMessage(message);
+			}
+			else if (((room || last_room)) && !new_sanct && old_sanct)
+			{
+				LoadString(hInstance, IDS_EXIT_SANCTUARY, message, sizeof(message));
+				display->DisplayMessage(message);
+			}
+
+			old_sanct = new_sanct;
+		}
+
+		// show room names in training mode
+		if ((room != last_room) && (options.welcome_ai) && ready)
+		{
+			LoadString(hInstance, IDS_ENTER_LEVEL, disp_message, sizeof(disp_message));
+			_stprintf(message, disp_message, level->RoomName(room));
+			display->DisplayMessage(message, false);
+		}
+
+#ifndef AGENT
+		// log into the game at end of training
+		if ((options.welcome_ai) && (room == THRESHOLD_QUAD))
+		{ // log into gameserver at completion of training
+			cItem *item;
+			options.welcome_ai = false;
+
+			// don't let the sneaky bastards keep their training talismans
+			for (item = actors->IterateItems(INIT); item != NO_ACTOR; item = actors->IterateItems(NEXT))
+			{
+				item->SetStatus(ITEM_DESTROYING);
+				item->SetTerminate();
+			}
+			actors->IterateItems(DONE);
+
+			if (options.network && gs && !(gs->LoggedIntoGame()))
+			{
+				gs->WelcomeAIComplete();
+			}
+		}
+#endif
+	}
+
+	if (options.network && (room != last_room) && gs && gs->LoggedIntoLevel())
+	{
+		this->MarkLastLocation();
+		last_mumble_message = 0;
+		gs->OnRoomChange((short)old_x, short(old_y));
+	}
+
+
+	return;
+};
+
+bool cPlayer::ActiveShieldValid(void)
+{
+	if (!active_shield || !actors->ValidItem(active_shield))
+		return false;
+
+	for (int i = 0; i < active_shield->NumFunctions(); i++)
+		if (active_shield->ItemFunction(i) == LyraItem::ARMOR_FUNCTION)
+			return true;
+
+	return false;
+}
+
+// returns true if there is now an active shield
+bool cPlayer::SetActiveShield(cItem *value)
+{
+	LmAvatar new_avatar = avatar;
+
+	if (active_shield && (!value || (active_shield == value)))
+	{
+		LoadString(hInstance, IDS_NO_SHIELD, disp_message, sizeof(disp_message));
+		display->DisplayMessage(disp_message);
+		value = NO_ITEM;
+	}
+
+	if (active_shield && actors->ValidItem(active_shield))
+		active_shield->SetInventoryFlags(active_shield->InventoryFlags() & ~ITEM_ACTIVE_SHIELD);
+
+	item_flags_sorting_changed = true;
+	active_shield = value;
+	if (active_shield)
+		return true;
+	else
+		return false;
+};
+
+
+
+// Changes the current value of a player's stat.
+int cPlayer::SetCurrStat(int stat, int value, int how, lyra_id_t origin_id)
+{
+	int amount = value;
+
+	if (value != Stats::STAT_MIN)
+		this->ValidateChecksums();
+
+	if (origin_id == Lyra::ID_UNKNOWN)
+	{
+		if (last_attacker_id != Lyra::ID_UNKNOWN)
+			origin_id = last_attacker_id;
+		else
+			origin_id = this->ID();
+	}
+
+#ifdef GAMEMASTER // check for invulnerability
+	if ((origin_id != this->ID()) && (how == SET_RELATIVE) &&
+		(value < 0) && options.invulnerable)
+		return stats[stat].current;
+#endif
+
+	if ((stat == Stats::DREAMSOUL) &&
+		(origin_id != this->ID()) &&
+		(how == SET_RELATIVE) &&
+		(value < 0))
+	{
+		// handle peace aura
+		if (player->flags & ACTOR_PEACE_AURA)
+		{
+			LoadString(hInstance, IDS_PEACE_AURA, disp_message, sizeof(disp_message));
+			display->DisplayMessage(disp_message);
+			return stats[stat].current;
+		}
+
+		// check if we're in a no damage level before trying to apply damage
+		if (safezone) return stats[stat].current;
+	}
+
+	// check for armor on dreamsoul drains
+	if ((stat == Stats::DREAMSOUL) && (how == SET_RELATIVE) && (value < 0) &&
+		(origin_id != playerID))
+	{
+		if (avatar_armor_strength > 0) {
+			int new_damage = (int)(amount*((100 - avatar_armor_strength) / 100.0));
+
+#ifdef UL_DEV
+			if (new_damage != amount) {
+				_stprintf(temp_message, "Initial damage of %d but only %d was applied due to your Avatar Armor", amount, new_damage);
+				display->DisplayMessage(temp_message);
+			}
+#endif
+			// 10% chance for an attack stronger than 3 dreamsoul to break your shield
+			if (amount < -3 && rand() % 10 == 0)
+			{
+#ifdef UL_DEV
+				_stprintf(temp_message, "Oh snap! That mofo broke your shield, yo!");
+				display->DisplayMessage(temp_message);
+#endif
+				this->RemoveTimedEffect(LyraEffect::PLAYER_SHIELD);
+			}
+
+			amount = new_damage;
+		}
+
+		if (GetBulwark() > 0)
+		{
+			// we're bulwark'd, go ahead and absorb what you can.
+			int bulwark_absorb = MIN((int)(amount*(BULWARK_ABSORB / 100.0)), GetBulwark());
+			SetBulwark(MAX(GetBulwark() + bulwark_absorb, 0));
+#ifdef UL_DEV
+			_stprintf(temp_message, "Amount pre-Bulwark: %d, Bulwarb absorbs: %d, Bulwark dura now: %d", amount, bulwark_absorb, GetBulwark());
+			display->DisplayMessage(temp_message);
+#endif
+			amount -= bulwark_absorb;
+			if (GetBulwark() <= 0)
+				this->RemoveTimedEffect(LyraEffect::PLAYER_GKSHIELD);
+		}
+
+		if (this->ActiveShieldValid())
+			amount = active_shield->AbsorbDamage(amount);
+#ifdef GAMEMASTER // dark mares get an additional 25% shield
+		if (this->GetAccountType() == LmAvatar::ACCT_DARKMARE)
+			amount = (int)(amount*.75);
+#endif
+#ifdef PMARE // pmare bogroms get an additional 30% shield
+
+		if (this->GetMonsterType() == Avatars::BOGROM)
+			amount = amount * .70;
+		else if (this->GetMonsterType() != Avatars::AGOKNIGHT)
+			// other pmares get a 15% shield
+			amount = amount * .85;
+#endif
+		if (amount)
+			this->SetHit(true);
+		int current = stats[stat].current;
+		int max = stats[stat].max;
+
+		int current_stat_ratio = current * 4 / max;
+		int new_stat_ratio = (current + amount) * 4 / max;
+		if ((new_stat_ratio < 3) && (new_stat_ratio >= 0) &&
+			(new_stat_ratio != current_stat_ratio))
+		{
+			const UINT KillProgressIDs[] = { IDS_KILL_PROGRESS_3,IDS_KILL_PROGRESS_2,IDS_KILL_PROGRESS_1 };
+			LoadString(hInstance, KillProgressIDs[new_stat_ratio], disp_message, sizeof(disp_message));
+
+#ifdef GAMEMASTER
+			if (agentbox && agentbox->PosessionInProgress())
+			{	// use monster type..not login name if possesd agent
+				_stprintf(temp_message, _T(">%s %s "), NightmareName(avatar.AvatarType()), disp_message);
+				gs->Talk(temp_message, RMsg_Speech::RAW_EMOTE, Lyra::ID_UNKNOWN, false, false);
+			}
+			else
+#endif
+				gs->Talk(disp_message, RMsg_Speech::EMOTE, Lyra::ID_UNKNOWN, false, false);
+		}
+	}
+
+	// Modifiers go here
+	if (how == SET_ABSOLUTE)
+		stats[stat].current = amount;
+	else
+		stats[stat].current += amount;
+
+	int min = (stat == Stats::DREAMSOUL && how == SET_RELATIVE_NO_COLLAPSE) ? 1 : 0;
+
+	// ensure we're not over max or under min
+	if (stats[stat].current > stats[stat].max)
+		stats[stat].current = stats[stat].max;
+	if (stats[stat].current <= min)
+		stats[stat].current = min;
+
+	if (origin_id != SERVER_UPDATE_ID)
+		stats[stat].current_needs_update = true;
+
+	//_tprintf("%d set to %d; new = %d max = %d\n",stat,value,stats[stat].current,stats[stat].max);
+
+	stats[stat].checksum = ((stats[stat].current + stats[stat].max)) ^ MAGIC_XOR_VAR;
+
+	cp->UpdateStats();
+
+	if ((stat == Stats::DREAMSOUL) && (stats[stat].current == Stats::STAT_MIN))
+		this->Dissolve(origin_id);
+
+	return stats[stat].current;
+}
+
+// Changes the max value of a player's stat; can ONLY be set absolute
+int cPlayer::SetMaxStat(int stat, int value, lyra_id_t origin_id)
+{
+	int old_value = stats[stat].max;
+
+	if (value != Stats::STAT_MIN)
+		this->ValidateChecksums();
+
+	stats[stat].max = value;
+
+	// ensure we're not over max or under min
+	if (stats[stat].max <= Stats::STAT_MIN)
+		stats[stat].max = Stats::STAT_MIN;
+#ifndef AGENT // stat max doesn't apply to agents
+	else if (stats[stat].max > Stats::STAT_MAX)
+		stats[stat].max = Stats::STAT_MAX;
+#endif
+
+	stats[stat].checksum = ((stats[stat].current + stats[stat].max)) ^ MAGIC_XOR_VAR;
+
+	// adjust current stat for change in max when max goes up, but NOT from 0, as this causes soulspheres to reform
+	if ((stats[stat].max > old_value) && stats[stat].current)
+		this->SetCurrStat(stat, stats[stat].max - old_value, SET_RELATIVE, playerID);
+
+	stats[stat].checksum = ((stats[stat].current + stats[stat].max)) ^ MAGIC_XOR_VAR;
+
+	// ensure current stat isn't over the max
+	if (stats[stat].current > stats[stat].max)
+		this->SetCurrStat(stat, stats[stat].max, SET_ABSOLUTE, playerID);
+
+	stats[stat].checksum = ((stats[stat].current + stats[stat].max)) ^ MAGIC_XOR_VAR;
+
+	cp->UpdateStats();
+
+	return stats[stat].max;
+}
+
+void cPlayer::SetHeadID(int value, bool update)
+{
+	LmAvatar new_avatar = avatar;
+	unsigned int old_head_id = avatar.Head();
+
+	new_avatar.SetHead(value);
+	if (new_avatar.Head() != old_head_id)
+		this->SetAvatar(new_avatar, update);
+}
+
+
+void cPlayer::InitAvatar(void)
+{
+	int random, sex;
+
+	random = rand() % 2;
+#ifdef PMARE
+	sex = Avatars::MIN_NIGHTMARE_TYPE + 1;
+#else
+	if (random)
+		sex = Avatars::FEMALE;
+	else
+		sex = Avatars::MALE;
+#endif
+	avatar.Init(sex, 0, 0, 0, 0, 0, Guild::NO_GUILD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+
+bool cPlayer::IsMare(void)
+{
+	if (avatar.AvatarType() >= Avatars::MIN_NIGHTMARE_TYPE)
+		return true;
+	else
+		return false;
+}
+
+void cPlayer::SetAvatar(LmAvatar new_avatar, bool update_server)
+{
+	if (this->playerID != INVALID_PLAYERID)
+	{
+
+		// sanity check the new avatar first
+
+		if ((new_avatar.AvatarType() > Avatars::MAX_AVATAR_TYPE) ||
+			(new_avatar.AvatarType() < Avatars::MIN_AVATAR_TYPE))
+			return;
+
+		if (new_avatar.ShowGuild() &&
+			(this->GuildRank(new_avatar.GuildID()) != new_avatar.GuildRank()))
+		{
+			// clear it
+			new_avatar.SetShowGuild(0);
+			new_avatar.SetGuildRank(Guild::NO_RANK);
+			new_avatar.SetGuildID(Guild::NO_GUILD);
+		}
+
+		// check sphere
+		if (new_avatar.ShowSphere() && (this->Sphere() != new_avatar.Sphere()))
+		{
+			new_avatar.SetShowSphere(0);
+			new_avatar.SetSphere(this->Sphere());
+		}
+
+		// Reset halo if the player if a) had halo off, b) no art of train or sphere
+		if (new_avatar.Teacher() && !this->IsTeacher()) // 		this->Skill(Arts::TRAIN))
+			new_avatar.SetTeacher(0);
+
+		// Reset halo if the player if a) had halo off, b) no art of quest
+		if (new_avatar.Apprentice() && !this->IsApprentice())
+			new_avatar.SetApprentice(0);
+
+		// Reset double halo if not a master teacher
+		if (new_avatar.MasterTeacher() && (0 == this->Skill(Arts::TRAIN_SELF)))
+			new_avatar.SetMasterTeacher(0);
+
+		// Reset gold sphere if not a dreamsmith
+		if (new_avatar.DreamSmith() && (0 == this->Skill(Arts::DREAMSMITH_MARK)))
+			new_avatar.SetDreamSmith(0);
+
+		// Reset blue sphere if not a wordsmith
+		if (new_avatar.WordSmith() && (0 == this->Skill(Arts::WORDSMITH_MARK)))
+			new_avatar.SetWordSmith(0);
+
+		// Reset red sphere if no dreamstrike
+		if (new_avatar.Dreamstrike() && (0 == this->Skill(Arts::DREAMSTRIKE)))
+			new_avatar.SetDreamstrike(0);
+
+	}
+
+#ifdef GAMEMASTER
+	if (new_avatar.Hidden())
+		flags = flags | ACTOR_NOCOLLIDE;
+	else
+		flags = flags & ~ACTOR_NOCOLLIDE;
+#endif
+
+	avatar = new_avatar;
+
+	int focus = avatar.Focus();
+	int mt = avatar.MasterTeacher();
+	int teach = avatar.Teacher();
+	int apprent = avatar.Apprentice();
+	int g = avatar.ShowGuild();
+	int gid = avatar.GuildID();
+	int gr = avatar.GuildRank();
+	int dsmith = avatar.DreamSmith();
+	int dstrike = avatar.Dreamstrike();
+	int ws = avatar.WordSmith();
+	int sphere = avatar.Sphere();
+
+	this->SetBitmapInfo(avatar.BitmapID());
+
+	if (avatar.AvatarType() >= Avatars::MIN_NIGHTMARE_TYPE)
+	{
+		avatar_poses = mare_poses;
+	}
+	else
+	{
+		avatar_poses = dreamer_poses;
+	}
+
+	if (this->playerID != INVALID_PLAYERID)
+	{
+		avatar.SetShowSphere(avatar.ShowSphere());
+		avatar.SetSphere(this->Sphere());
+	}
+
+	if (!forming && !dissolving)
+		currframe = avatar_poses[STANDING].start_frame;
+
+	if (gs && update_server)
+		gs->AvatarChange(avatar, true);
+
+	if (cp)
+		cp->AddAvatar();
+
+	return;
+}
+
+void cPlayer::SetTransformedAvatar(LmAvatar new_avatar)
+{
+	transformed_avatar = new_avatar;
+
+	if (avatar.AvatarType() >= Avatars::MIN_NIGHTMARE_TYPE)
+		avatar_poses = mare_poses;
+	else
+		avatar_poses = dreamer_poses;
+
+	if (!forming && !dissolving)
+		currframe = avatar_poses[STANDING].start_frame;
+
+	this->SetBitmapInfo(transformed_avatar.BitmapID());
+	if (gs)
+		gs->AvatarChange(transformed_avatar, false);
+	if (cp)
+		cp->AddAvatar();
+
+	return;
+
+}
+
+// attack as a nightmare; used by both agents and transformed players
+bool cPlayer::NightmareAttack(lyra_id_t target)
+{
+	if ((flags & ACTOR_PARALYZED) || (flags & ACTOR_SOULSPHERE))
+		return FALSE;
+
+	if (player->flags & ACTOR_CHAMELED)
+		player->RemoveTimedEffect(LyraEffect::PLAYER_CHAMELED);
+#ifndef AGENT
+	this->PerformedAction();
+#endif
+
+#ifndef AGENT
+	if (player->flags & ACTOR_PEACE_AURA)
+	{
+		LoadString(hInstance, IDS_PEACE_AURA_MARE, disp_message, sizeof(disp_message));
+		display->DisplayMessage(disp_message);
+		return FALSE;
+	}
+#endif
+
+#ifdef PMARE
+	if (rand() % 20 < 3)
+		this->HandlePmareDefense(false);
+#endif
+
+	int mare_avatar = this->CurrentAvatarType();
+
+#ifdef AGENT
+	if (this->AvatarType() < Avatars::MIN_NIGHTMARE_TYPE)
+	{ // Revenant borrow attack strength from the nightmare agent they replace based on agent username e.g. Shamblix_14=Shamblix
+		int pi;
+		TCHAR marename[Lyra::PLAYERNAME_MAX];
+		// *** STRING LITERAL ***  
+		if (_stscanf(agent_info[AgentIndex()].name, "%[^_]_%d", marename, &pi) != 2) {
+			// couldn't parse it
+			_tcsnccpy(marename, agent_info[AgentIndex()].name, sizeof(marename));
+	}
+		mare_avatar = WhichMonsterName(marename);
+}
+#endif
+
+	switch (this->CurrentAvatarType())
+	{
+#ifdef AGENT
+	case Avatars::MALE:
+	case Avatars::FEMALE:
+		int rev_damage;
+		int rev_effect;
+		switch (mare_avatar) { // Revenant damage and effects based on nightmare they replaced
+		case Avatars::EMPHANT: rev_damage = EMPHANT_DAMAGE; rev_effect = LyraEffect::NONE; break;
+		case Avatars::BOGROM: rev_damage = BOGROM_DAMAGE; rev_effect = LyraEffect::PLAYER_CURSED; break;
+		case Avatars::AGOKNIGHT: rev_damage = AGOKNIGHT_DAMAGE; rev_effect = LyraEffect::PLAYER_BLEED; break;
+		case Avatars::SHAMBLIX: rev_damage = SHAMBLIX_DAMAGE; rev_effect = LyraEffect::PLAYER_POISONED; break;
+		case Avatars::HORRON: rev_damage = HORRON_DAMAGE; rev_effect = LyraEffect::PLAYER_PARALYZED; break;
+		default: rev_damage = SHAMBLIX_DAMAGE; rev_effect = LyraEffect::NONE; break;
+		}
+		switch (rand() % 750)
+		{ // All Revenant have a chance to apply these effects, strength based on mare type
+		case 0: // Abjure the target instead
+			gs->SendPlayerMessage(target, RMsg_PlayerMsg::ABJURE, (mare_avatar * 10), 0);
+			break;
+		case 1: // Darkness the room instead
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::DARKNESS, (mare_avatar * 10), 0);
+			break;
+		case 3: // Terrorize the room instead
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::TERROR, (mare_avatar * 10), 0);
+			break;
+		case 4: // Firestorm the room instead
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::FIRESTORM, (mare_avatar * 10), 0);
+			break;
+		case 5: // Tempest the room instead
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::TEMPEST, (mare_avatar * 10), player->angle / 4);
+			break;
+		case 6: // DreamQuake the room instead
+			gs->SendPlayerMessage(0, RMsg_PlayerMsg::EARTHQUAKE, (mare_avatar * 10), 0);
+			break;
+		default:
+			if ((mare_avatar) > rand() % 10)
+				return gs->PlayerAttack(LyraBitmap::FIREBALL_MISSILE, 3, rev_effect, rev_damage);
+			else
+				return gs->PlayerAttack(LyraBitmap::DREAMBLADE_MISSILE, MELEE_VELOCITY, rev_effect, rev_damage);
+			break;
+			}
+#endif
+
+	case Avatars::EMPHANT: // 1-4 damage, melee
+		return gs->PlayerAttack(LyraBitmap::MARE_MELEE_MISSILE, MELEE_VELOCITY, LyraEffect::NONE, EMPHANT_DAMAGE);
+
+	case Avatars::BOGROM:	// 4-7 damage, melee
+#ifdef AGENT // special power for agents 
+		if ((rand() % 1000) == 0) // invis instead
+			this->SetTimedEffect(LyraEffect::PLAYER_INVISIBLE, 10000, player->ID(), EffectOrigin::ART_EVOKE);
+		else
+#else
+#ifdef PMARE //special power for pmares
+		if ((rand() % 100) == 0) // invis instead
+			this->SetTimedEffect(LyraEffect::PLAYER_INVISIBLE, 10000, player->ID(), EffectOrigin::ART_EVOKE);
+#endif
+#endif
+		return gs->PlayerAttack(LyraBitmap::MARE_MELEE_MISSILE, MELEE_VELOCITY, LyraEffect::NONE, BOGROM_DAMAGE);
+		break;
+
+	case Avatars::AGOKNIGHT:  // 10-20 damage, melee, can roar and blast
+#ifdef AGENT
+		if ((rand() % 250) == 0) // roar and blast instead
+		{
+			if (target)
+				gs->SendPlayerMessage(target, RMsg_PlayerMsg::BLAST, 30, 0);
+			gs->SetLastSound(LyraSound::AGOKNIGHT_ROAR);//gs->SendPlayerMessage(0, RMsg_PlayerMsg::TRIGGER_SOUND, LyraSound::AGOKNIGHT_ROAR, 0);
+			}
+		else
+#endif
+			return gs->PlayerAttack(LyraBitmap::MARE_MELEE_MISSILE, MELEE_VELOCITY, LyraEffect::NONE, AGOKNIGHT_DAMAGE);
+		break;
+
+	case Avatars::SHAMBLIX:
+#if defined (AGENT) || defined (PMARE) || defined (GAMEMASTER)
+		// 15% chance 
+		if (rand() % 20 < 3) {
+			// 1-50 damage, paralysis fireballs
+			return gs->PlayerAttack(LyraBitmap::FIREBALL_MISSILE, -5, LyraEffect::PLAYER_PARALYZED, SHAMBLIX_DAMAGE_XTR);
+		}
+#endif
+		// 10-30 damage, paralysis fireballs
+		return gs->PlayerAttack(LyraBitmap::FIREBALL_MISSILE, 3, LyraEffect::PLAYER_PARALYZED, SHAMBLIX_DAMAGE);
+
+	case Avatars::HORRON: // 12-40 damage, blinding fireballs
+	{
+#ifdef AGENT
+		if (target)
+		{
+			switch (rand() % 1500)
+			{
+			case 0: // Abjure the target instead
+				gs->SendPlayerMessage(target, RMsg_PlayerMsg::ABJURE, 10, 0);
+				gs->SetLastSound(LyraSound::MONSTER_ROAR);
+				break;
+			case 1: // Razorwind the room instead
+				gs->SendPlayerMessage(0, RMsg_PlayerMsg::RAZORWIND, 50, 0);
+				gs->SetLastSound(LyraSound::MONSTER_ROAR);
+				break;
+			case 3: // Tempest the room instead
+				gs->SendPlayerMessage(0, RMsg_PlayerMsg::TEMPEST, 50, player->angle / 4);
+				gs->SetLastSound(LyraSound::MONSTER_ROAR);
+				break;
+			default:
+				break;
+				}
+
+			}
+#endif
+#if defined (AGENT) || defined (PMARE) || defined (GAMEMASTER)
+		// 15% chance 
+		if (rand() % 20 < 3) {
+			// 35 damage, blind fireballs
+			return gs->PlayerAttack(LyraBitmap::FIREBALL_MISSILE, -7, LyraEffect::PLAYER_BLIND, HORRON_DAMAGE_XTR);
+		}
+#endif
+		return gs->PlayerAttack(LyraBitmap::FIREBALL_MISSILE, -5, LyraEffect::PLAYER_BLIND, HORRON_DAMAGE);
+		break;
+			}
+	}
+
+	return false;
+}
+
+short cPlayer::CurrentAvatarType(void)
+{
+	if (player->flags & ACTOR_TRANSFORMED)
+		return transformed_avatar.AvatarType();
+	else
+		return this->AvatarType();
+}
+
+
+void cPlayer::SetGuildRank(int guild_id, int value)
+{
+	guild_ranks[guild_id].rank = value;
+	if (avatar.GuildID() == guild_id && value == 0)
+	{
+		LmAvatar new_avatar = avatar;
+		new_avatar.SetGuildRank(0);
+		new_avatar.SetGuildID(Guild::NO_GUILD);
+		new_avatar.SetShowGuild(Patches::DONT_SHOW);
+
+		this->SetAvatar(new_avatar, true);
+	}
+	return;
+}
+
+void cPlayer::ValidateChecksums(void)
+{
+#ifndef AGENT
+	// skill formula: checksum = (value*1000) xor magic_value
+	int i;
+	int value;
+
+	if (checksum_incorrect || (!options.network) ||
+		(NULL == gs) || (!gs->LoggedIntoGame()))
+		return;
+
+	for (i = 0; i < NUM_ARTS; i++)
+	{
+		value = (skills[i].checksum ^ MAGIC_XOR_VAR);
+		if (skills[i].skill && (value != skills[i].skill))
+		{ // checksum doesn't match, and skill is non-zero
+			if (options.network && gs && gs->LoggedIntoGame())
+			{
+				LoadString(hInstance, IDS_ERROR_SKILL_CHECKSUM, disp_message, sizeof(disp_message));
+				_stprintf(message, disp_message, arts->Descrip(i), value, skills[i].skill);
+				gs->Talk(disp_message, RMsg_Speech::AUTO_CHEAT, Lyra::ID_UNKNOWN, false);
+			}
+			checksum_incorrect = true;
+			//LoadString (hInstance, IDS_CORRUPT_DATA, message, sizeof(message));
+			//GAME_ERROR(message);
+			//return;
+		}
+	}
+
+	for (i = 0; i < NUM_PLAYER_STATS; i++)
+	{
+		value = (stats[i].checksum ^ MAGIC_XOR_VAR);
+		if (((stats[i].current != Stats::STAT_MIN) && (stats[i].max != Stats::STAT_MIN)) &&
+			(value != (stats[i].current + stats[i].max)))
+		{ // checksum doesn't match, and stat is non-zero
+			if (options.network && gs && gs->LoggedIntoGame())
+			{
+				LoadString(hInstance, IDS_ERROR_STAT_CHECKSUM, disp_message, sizeof(disp_message));
+				_stprintf(message, disp_message, stats[i].name, value, stats[i].current + stats[i].max);
+				gs->Talk(message, RMsg_Speech::AUTO_CHEAT, Lyra::ID_UNKNOWN, false);
+			}
+			checksum_incorrect = true;
+			//LoadString (hInstance, IDS_CORRUPT_DATA, message, sizeof(message));
+			//GAME_ERROR(message);
+			//return false;
+		}
+	}
+#endif
+
+	return;
+}
+
+int cPlayer::SetSkill(int art_id, int value, int how, lyra_id_t origin_id, bool initializing)
+{
+
+	if ((art_id < 0) || (art_id >= NUM_ARTS))
+	{
+
+		LoadString(hInstance, IDS_INVALID_ART, temp_message, sizeof(temp_message));
+		_stprintf(errbuf, temp_message, art_id);
+		NONFATAL_ERROR(errbuf);
+		return 0;
+	}
+
+	// validate checksums first
+	if (value)
+		this->ValidateChecksums();
+
+	int orig_skill = skills[art_id].skill;
+
+	if (how == SET_ABSOLUTE)
+		skills[art_id].skill = value;
+	else
+		skills[art_id].skill += value;
+
+	if (skills[art_id].skill > Stats::SKILL_MAX)
+		skills[art_id].skill = Stats::SKILL_MAX;
+
+	skills[art_id].checksum = (skills[art_id].skill) ^ MAGIC_XOR_VAR;
+
+	if (cp)
+		cp->UpdateArt(art_id);
+
+	if ((origin_id != SERVER_UPDATE_ID) && (skills[art_id].skill != orig_skill))
+	{	// update server immediately on skill change
+		skills[art_id].needs_update = true;
+		if (options.network && gs)
+			gs->UpdateServer();
+	}
+
+	if ((skills[art_id].skill != orig_skill) && !initializing &&
+		((skills[art_id].skill % 10) == 9) && (art_id != Arts::LEVELTRAIN))
+	{ // need teacher to go up in skill now
+		LoadString(hInstance, IDS_SKILL_NEEDTEACHER, disp_message, sizeof(disp_message));
+		_stprintf(message, disp_message, arts->Descrip(art_id));
+		display->DisplayMessage(message);
+	}
+
+	return skills[art_id].skill;
+}
+
+// Change player XP; returns new xp.
+int cPlayer::SetXP(int value, bool initializing)
+{
+	int old_xp = xp;
+	xp = value;
+
+	if (xp < 0)
+		xp = 0;
+
+#ifndef AGENT
+
+	int old_orbit = orbit;
+
+	orbit = LmStats::OrbitFromXP(xp);
+
+	if (!initializing && gs && gs->LoggedIntoGame())
+	{
+		if (xp > old_xp)
+		{
+			LoadString(hInstance, IDS_GOT_XP, disp_message, sizeof(disp_message));
+			_stprintf(message, disp_message, (xp - old_xp));
+			display->DisplayMessage(message);
+		}
+		else if (xp < old_xp)
+		{
+			LoadString(hInstance, IDS_LOST_XP, disp_message, sizeof(disp_message));
+			_stprintf(message, disp_message, (old_xp - xp));
+			display->DisplayMessage(message);
+		}
+
+#ifdef PMARE
+		if (old_orbit != orbit)
+		{
+			cp->UpdateStats();
+			cp->SetupArts();
+		}
+#else
+
+		if (old_orbit < orbit)
+		{
+			LoadString(hInstance, IDS_PLAYER_GAINORBIT, disp_message, sizeof(disp_message));
+			display->DisplayMessage(disp_message);
+			if ((orbit % 10) == 9) // need teacher for next orbit
+			{
+				LoadString(hInstance, IDS_NEED_TEACHER, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+			// check to see what new skills you can learn now
+			for (int i = 0; i < NUM_ARTS; i++)
+				/* if ((skills[i].skill == 0) &&
+
+						(i != Arts::LEVELTRAIN) &&
+						((arts->MinOrbit(i) <= MAX_OUT_OF_FOCUS_MIN_ORBIT) ||
+						 (arts->Stat(i) == Stats::NO_STAT) ||
+						 (arts->Stat(i) == Stats::DREAMSOUL) ||
+						 (arts->Stat(i) == this->FocusStat())))*/
+				if ((arts->MinOrbit(i) == orbit) && arts->Learnable(i) && arts->DisplayLearnable(i))
+				{
+					LoadString(hInstance, IDS_CAN_LEARN_ART, disp_message, sizeof(disp_message));
+					_stprintf(message, disp_message, arts->Descrip(i));
+					display->DisplayMessage(message);
+				}
+		}
+		else if (old_orbit > orbit)
+		{
+			LoadString(hInstance, IDS_PLAYER_LOSEORBIT, disp_message, sizeof(disp_message));
+			display->DisplayMessage(disp_message);
+			if ((orbit % 10) == 9) // need teacher for next orbit
+			{
+				LoadString(hInstance, IDS_NEED_TEACHER, disp_message, sizeof(disp_message));
+				display->DisplayMessage(disp_message);
+			}
+
+		}
+#endif
+		}
+#endif
+
+	return xp;
+	}
+
+// reform after being a soulsphere
+void cPlayer::ReformAvatar(void)
+{
+	if (!(flags & ACTOR_SOULSPHERE) || !(stats[Stats::DREAMSOUL].max))
+		return;
+
+	LoadString(hInstance, IDS_AVATAR_REFORMED, disp_message, sizeof(disp_message));
+	display->DisplayMessage(disp_message, false);
+#if defined (AGENT) || defined (PMARE)
+	this->SetCurrStat(Stats::DREAMSOUL, stats[Stats::DREAMSOUL].max, SET_ABSOLUTE, playerID);
+	this->SetCurrStat(Stats::WILLPOWER, stats[Stats::WILLPOWER].max, SET_ABSOLUTE, playerID);
+	this->SetCurrStat(Stats::RESILIENCE, stats[Stats::RESILIENCE].max, SET_ABSOLUTE, playerID);
+	this->SetCurrStat(Stats::INSIGHT, stats[Stats::INSIGHT].max, SET_ABSOLUTE, playerID);
+	this->SetCurrStat(Stats::LUCIDITY, stats[Stats::LUCIDITY].max, SET_ABSOLUTE, playerID);
+#else
+	if (this->CurrStat(Stats::DREAMSOUL) < 1)
+		this->SetCurrStat(Stats::DREAMSOUL, 1, SET_ABSOLUTE, playerID);
+#endif
+	flags = flags & ~ACTOR_SOULSPHERE;
+	forming = true;
+	injured = dissolving = false;
+	animate_ticks = 0;
+	currframe = 0;
+	gs->UpdateServer(); // update server on reformation
+
+	cDS->PlaySound(LyraSound::HOLYLIGHT, x, y, true);
+	if (flags & ACTOR_SOULEVOKE)
+		this->RemoveTimedEffect(LyraEffect::PLAYER_SOULEVOKE);
+
+#ifdef PMARE
+	this->HandlePmareDefense(true);
+#endif
+
+	return;
+}
+
+#ifdef PMARE
+// Pmares get some temporary defensive abilities
+void cPlayer::HandlePmareDefense(bool add_all)
+{
+	bool added_art = false;
+	DWORD duration = 1200000;
+
+	if ((add_all || !added_art) && !(flags & timed_effects->actor_flag[LyraEffect::PLAYER_PROT_PARALYSIS]))
+	{
+		this->SetTimedEffect(LyraEffect::PLAYER_PROT_PARALYSIS, duration, playerID, EffectOrigin::ART_EVOKE);
+		added_art = true;
+	}
+
+	if ((add_all || !added_art) && !(flags & timed_effects->actor_flag[LyraEffect::PLAYER_DETECT_INVISIBLE]))
+	{
+		this->SetTimedEffect(LyraEffect::PLAYER_DETECT_INVISIBLE, duration, playerID, EffectOrigin::ART_EVOKE);
+		added_art = true;
+	}
+
+	if ((add_all || !added_art) && !(flags & timed_effects->actor_flag[LyraEffect::PLAYER_REFLECT]))
+	{
+		this->SetTimedEffect(LyraEffect::PLAYER_REFLECT, duration, playerID, EffectOrigin::ART_EVOKE);
+		added_art = true;
+	}
+
+	if ((add_all || !added_art) && !(flags & timed_effects->actor_flag[LyraEffect::PLAYER_PROT_FEAR]))
+	{
+		this->SetTimedEffect(LyraEffect::PLAYER_PROT_FEAR, duration, playerID, EffectOrigin::ART_EVOKE);
+		added_art = true;
+	}
+
+	if ((add_all || !added_art) && !(flags & timed_effects->actor_flag[LyraEffect::PLAYER_PROT_CURSE]))
+	{
+		this->SetTimedEffect(LyraEffect::PLAYER_PROT_CURSE, duration * 3, playerID, EffectOrigin::ART_EVOKE);
+		added_art = true;
+	}
+
+	if ((add_all || !added_art) && !(flags & timed_effects->actor_flag[LyraEffect::PLAYER_NO_POISON]))
+	{
+		this->RemoveTimedEffect(LyraEffect::PLAYER_POISONED);
+		this->SetTimedEffect(LyraEffect::PLAYER_NO_POISON, duration, playerID, EffectOrigin::ART_EVOKE);
+		added_art = true;
+	}
+
+	if ((add_all || !added_art) && !(flags & timed_effects->actor_flag[LyraEffect::PLAYER_TRAIL]))
+	{
+		this->SetTimedEffect(LyraEffect::PLAYER_TRAIL, duration, playerID, EffectOrigin::ART_EVOKE);
+		added_art = true;
+}
+}
+#endif
+
+// Player has just suffered an "avatar death"
+// origin_id is the player id of whomever caused the little death
+void cPlayer::Dissolve(lyra_id_t origin_id, int talisman_strength)
+{
+#ifndef AGENT
+	cItem *item;
+#endif
+
+	cNeighbor *n;
+	LmItem info;
+	LmItemHdr header;
+	int target = 0, count = 0, i, j;
+	bool recall_active = (flags & ACTOR_RECALL);
+
+	if (flags & ACTOR_SOULSPHERE)
+		return;
+
+	collapse_time = LyraTime();
+	next_collapse_index++;
+	if (next_collapse_index == COLLAPSES_TRACKED)
+		next_collapse_index = 0;
+
+	collapses[next_collapse_index].collapser_id = origin_id;
+	collapses[next_collapse_index].time = collapse_time;
+
+	this->SetLastAttackerID(Lyra::ID_UNKNOWN);
+	this->PerformedAction(); // wrecks evoking, etc.
+
+	n = actors->LookUpNeighbor(origin_id);
+	if ((n == NO_ACTOR) || (origin_id == playerID))
+	{	// dissolved by our own hand
+#ifdef PMARE
+		LoadString(hInstance, IDS_PMARE_DISSOLVED_BY_SELF, disp_message, sizeof(disp_message));
+#else
+		LoadString(hInstance, IDS_PLAYER_DISSOLVED_BY_SELF, disp_message, sizeof(disp_message));
+#endif
+		if (gs && gs->LoggedIntoLevel()) // don't display on login
+			display->DisplayMessage(disp_message);
+	}
+	else // someone else took us down
+	{
+#ifdef PMARE
+		LoadString(hInstance, IDS_PMARE_DISSOLVED_BY_OTHER, disp_message, sizeof(disp_message));
+#else
+		LoadString(hInstance, IDS_PLAYER_DISSOLVED_BY_OTHER, disp_message, sizeof(disp_message));
+#endif
+		_stprintf(message, disp_message, n->Name());
+		display->DisplayMessage(message);
+
+#ifndef AGENT
+		LoadString(hInstance, IDS_ANNOUNCE_COLLAPSE, message, sizeof(message));
+		if (n != NO_ACTOR) {
+			_stprintf(disp_message, message, n->Name());
+		}
+		else {
+			LoadString(hInstance, IDS_ANOTHER_DREAMER, temp_message, sizeof(temp_message));
+			_stprintf(disp_message, message, temp_message);
+		}
+		gs->Talk(disp_message, RMsg_Speech::EMOTE, Lyra::ID_UNKNOWN);
+
+		// check to see if this other entity has collapsed us too many
+		// times recently - if so, issue a cheat report
+		int num_collapses = 0;
+		for (i = 0; i < COLLAPSES_TRACKED; i++)
+		{
+			if ((collapses[i].collapser_id == origin_id) &&
+				((collapse_time - collapses[i].time) < COLLAPSE_TRACK_INTERVAL))
+				num_collapses++;
+		}
+		if (num_collapses > COLLAPSE_CHEAT_THRESHHOLD)
+		{
+			LoadString(hInstance, IDS_TOO_MANY_COLLAPSES, disp_message, sizeof(disp_message));
+			_stprintf(message, disp_message, origin_id, player->ID(), num_collapses, (int)((COLLAPSE_TRACK_INTERVAL / 1000)));
+			gs->Talk(message, RMsg_Speech::AUTO_CHEAT, Lyra::ID_UNKNOWN, true);
+		}
+#endif
+	}
+
+	for (i = 0; i < NUM_TIMED_EFFECTS; i++)
+		this->RemoveTimedEffect(i);
+
+	// If we don't do this, regeneration kicks in and restores us.
+
+	if (player->flags & ACTOR_REGENERATING)
+		player->flags &= ~ACTOR_REGENERATING;
+
+	flags = flags | ACTOR_SOULSPHERE;
+	dissolving = true;
+	forming = false;
+	currframe = 0;
+	animate_ticks = 0;
+
+	// determine if we're in danger of losing a sphere
+	unsigned int sphere_xp = lyra_xp_table[this->Sphere() * 10].xp_base;
+	unsigned int new_xp = player->XP() - .01*player->XP();
+	if ((player->Sphere() >= 1) &&
+		(new_xp >= sphere_xp) &&
+		((new_xp - .01*new_xp) < sphere_xp))
+	{ // in danger of losing a sphere
+		LoadString(hInstance, IDS_SPHERE_THREATENED, disp_message, sizeof(disp_message));
+		display->DisplayMessage(disp_message);
+	}
+
+	if (options.network && gs && gs->LoggedIntoLevel())
+	{
+		gs->SendPositionUpdate(TRIGGER_DEATH);
+		gs->UpdateServer(); // update server on dissolution
+		i = 1; // talisman value
+		j = orbit;
+#ifdef AGENT
+		if (this->AvatarType() < Avatars::MIN_NIGHTMARE_TYPE)
+		{ // Revenant borrow attack strength from the nightmare agent they replace based on agent username e.g. Shamblix_14=Shamblix
+			int pi;
+			TCHAR marename[Lyra::PLAYERNAME_MAX];
+			// *** STRING LITERAL ***  
+			if (_stscanf(agent_info[AgentIndex()].name, "%[^_]_%d", marename, &pi) != 2) {
+				// couldn't parse it
+				_tcsnccpy(marename, agent_info[AgentIndex()].name, sizeof(marename));
+			}
+			j = (100 + WhichMonsterName(marename));
+		}
+		else
+		{
+			if (this->CurrStat(Stats::DREAMSOUL) > 0)
+				i = this->CurrStat(Stats::DREAMSOUL);
+			j = 100 + this->AvatarType(); // night mare = 100+
+			blast_chance = 0; // reset Ago's Blast Chance on collapse
+		}
+#else 
+#ifdef PMARE
+		// if player mare = 200+
+		j = 150 + this->AvatarType();
+		i = orbit;
+		// End the pmare session 5 minutes earlier for each time it is collapsed
+		options.pmare_logout_time = options.pmare_logout_time - 5 * 60000;
+#else 
+#ifdef GAMEMASTER // nightmare possession, dark mare orbit = 200 + nightmare index
+		if ((avatar.AvatarType() >= Avatars::MIN_NIGHTMARE_TYPE) &&
+			!(flags & ACTOR_TRANSFORMED)) {
+			j = 200 + this->AvatarType();
+			i = orbit;
+		}
+#endif // pmare
+#endif // gm
+#endif // agent
+		gs->SendPlayerMessage(origin_id, RMsg_PlayerMsg::YOUGOTME, j, i, recall_active ? 1 : 0);
+
+#ifndef AGENT
+		// drop artifacts
+		for (item = actors->IterateItems(INIT); item != NO_ACTOR; item = actors->IterateItems(NEXT))
+			if ((item->Status() == ITEM_OWNED) && (item->AlwaysDrop()))
+				item->Drop(x, y, angle);
+		actors->IterateItems(DONE);
+
+		// count items
+		int item_count = 0;
+		for (item = actors->IterateItems(INIT); item != NO_ACTOR; item = actors->IterateItems(NEXT))
+			if ((item->Status() == ITEM_OWNED) && item->Losable())
+				item_count++;
+		actors->IterateItems(DONE);
+
+		if (item_count)
+			target = rand() % (item_count);
+		for (item = actors->IterateItems(INIT); item != NO_ACTOR; item = actors->IterateItems(NEXT))
+			if ((item->Status() == ITEM_OWNED) && item->Losable() &&
+				(count == target))
+			{
+				item->Drop(x, y, angle);
+				break;
+			}
+			else
+				count++;
+		actors->IterateItems(DONE);
+#endif
+	}
+
+	if (level->ID() == 46)
+		this->Teleport(6426, 2534, angle, 46);
+	else if (recall_active)
+	{
+		this->Teleport(recall_x, recall_y, recall_angle, recall_level);
+		this->RemoveTimedEffect(LyraEffect::PLAYER_RECALL);
+	}
+
+
+	this->ResetEyeHeight();
+	return;
+	}
+
+// returns the # of guilds in which the player has the given rank;
+// set rank to Guild::RULER_PENDING to see the # of guilds in which the
+// player has any rank
+int cPlayer::NumGuilds(int rank)
+{
+	int i, num_guilds;
+
+	for (i = num_guilds = 0; i < NUM_GUILDS; i++)
+		if (((rank == Guild::RULER_PENDING) && (guild_ranks[i].rank >= Guild::INITIATE))
+			|| (guild_ranks[i].rank == rank))
+			num_guilds++;
+
+	return num_guilds;
+}
+
+bool cPlayer::IsUninitiated(void)
+{
+	if (!this->IsInitiate() && !this->IsKnight() && !this->IsRuler())
+		return true;
+	else
+		return false;
+}
+
+// set guild_id to Guild::NO_GUILD to see if the player is in any guild
+bool cPlayer::IsInitiate(int guild_id)
+{
+	bool is_ruler = false;
+
+	if (guild_id != Guild::NO_GUILD)
+		return (guild_ranks[guild_id].rank == Guild::INITIATE);
+
+	for (int i = 0; i < NUM_GUILDS; i++)
+		if (guild_ranks[i].rank == Guild::INITIATE)
+			return true;
+
+	return false;
+}
+
+// set guild_id to Guild::NO_GUILD to see if the player is a knight in any guild
+bool cPlayer::IsKnight(int guild_id)
+{
+	bool is_knight = false;
+
+	if (guild_id != Guild::NO_GUILD)
+		return (guild_ranks[guild_id].rank == Guild::KNIGHT);
+
+	for (int i = 0; i < NUM_GUILDS; i++)
+		if (guild_ranks[i].rank == Guild::KNIGHT)
+			return true;
+
+	return false;
+
+}
+
+// set guild_id to Guild::NO_GUILD to see if the player is a ruler in any guild
+bool cPlayer::IsRuler(int guild_id)
+{
+	bool is_ruler = false;
+
+	if (guild_id != Guild::NO_GUILD)
+		return (guild_ranks[guild_id].rank == Guild::RULER);
+
+	for (int i = 0; i < NUM_GUILDS; i++)
+		if (guild_ranks[i].rank == Guild::RULER)
+			return true;
+
+	return false;
+}
+
+// returns true if we're a Female; based on avatar type
+bool cPlayer::IsFemale(void)
+{
+	if (avatar.AvatarType() == Avatars::FEMALE)
+		return true;
+	else
+		return false;
+}
+
+
+// returns true if we're a Mmale; based on avatar type
+bool cPlayer::IsMale(void)
+{
+	if (avatar.AvatarType() == Avatars::MALE)
+		return true;
+	else
+		return false;
+}
+
+// returns true if we're a monster; based on avatar type
+unsigned int cPlayer::GetMonsterType(void)
+{
+	return avatar.AvatarType();
+}
+
+// returns true if we're a monster; based on avatar type
+unsigned int cPlayer::GetTransformedMonsterType(void)
+{
+	return transformed_avatar.AvatarType();
+}
+
+// returns true if we're a monster; based on avatar type
+bool cPlayer::IsMonster(void)
+{
+	if (this->GetMonsterType() >= Avatars::MIN_NIGHTMARE_TYPE)
+		return true;
+	else
+		return false;
+}
+
+// returns true if we're possessed;
+bool cPlayer::IsPossesed(void)
+{
+	if (player->GetTransformedMonsterType() >= Avatars::MIN_NIGHTMARE_TYPE)
+		return true;
+	else
+		return false;
+}
+
+// returns true if we're a pmare; based on account type
+bool cPlayer::IsPMare(void)
+{
+	if (this->GetAccountType() == LmAvatar::ACCT_PMARE)
+		return true;
+	return false;
+}
+
+// returns true if we're a dreamer; based on account type
+bool cPlayer::IsDreamerAccount(void)
+{
+	if ((this->GetAccountType() == LmAvatar::ACCT_DREAMER) ||
+		(this->GetAccountType() == LmAvatar::ACCT_ADMIN))
+		return true;
+	else
+		return false;
+}
+
+// make a guild flag byte based on guild membership;
+// only include guilds of the given rank, unless rank = Guild::RULER_PENDING,
+// in which case include any guild in which the player has rank
+unsigned char cPlayer::GuildFlags(int rank)
+{
+	unsigned char guild_flags = 0;
+	unsigned char curr_flag = 0x01;
+
+	for (int i = 0; i < NUM_GUILDS; i++)
+	{
+		if (((rank == Guild::RULER_PENDING) && (guild_ranks[i].rank >= Guild::INITIATE))
+			|| (guild_ranks[i].rank == rank))
+			guild_flags = guild_flags | curr_flag;
+		curr_flag = curr_flag << 1;
+	}
+	return guild_flags;
+}
+
+DWORD cPlayer::EffectExpire(int effect)
+{
+	return timed_effects->expires[effect];
+};
+
+void cPlayer::DisplayTimedEffects(void)
+{
+	int num_effects = 0;
+	LoadString(hInstance, IDS_ACTIVE_EFFECTS, message, sizeof(message));
+	for (int i = 1; i < NUM_TIMED_EFFECTS; i++)
+		if (timed_effects->actor_flag[i] & flags)
+		{
+			// Do not show curse as an active effect (requested by Balthiir)
+			if (i != LyraEffect::PLAYER_CURSED) {
+				// Just load the string at the beginning - Jared
+				//if (num_effects == 0)
+				//		LoadString (hInstance, IDS_ACTIVE_EFFECTS, message, sizeof(message));
+				num_effects++;
+				_tcscat(message, _T("  "));
+				_tcscat(message, timed_effects->name[i]);
+				_tcscat(message, _T(" ("));
+				int duration = (timed_effects->expires[i] - LyraTime()) / 1000;
+				if (duration < 30)
+					LoadString(hInstance, IDS_DUR_VERY_SHORT, disp_message, sizeof(disp_message));
+				else if (duration < 120)
+					LoadString(hInstance, IDS_DUR_SHORT, disp_message, sizeof(disp_message));
+				else if (duration < 600)
+					LoadString(hInstance, IDS_DUR_MID, disp_message, sizeof(disp_message));
+				else if (duration < 3000)
+					LoadString(hInstance, IDS_DUR_LONG, disp_message, sizeof(disp_message));
+				else
+					LoadString(hInstance, IDS_DUR_VERY_LONG, disp_message, sizeof(disp_message));
+				_tcscat(message, disp_message);
+				_tcscat(message, _T(")    \n"));
+			}
+		}
+
+#ifdef GAMEMASTER
+	if (options.invulnerable)
+		LoadString(hInstance, IDS_GM_INVUL, message, sizeof(message));
+#endif
+
+	if ((num_effects == 0) && (!options.invulnerable))
+		LoadString(hInstance, IDS_NO_ACTIVE_EFFECTS, message, sizeof(message));
+
+	display->DisplayMessage(message, false);
+	return;
+}
+
+void cPlayer::MarkLastLocation(void)
+{
+	if (options.network && gs && gs->LoggedIntoLevel())
+	{
+		last_x = x;
+		last_y = y;
+		last_level = level->ID();
+		last_loc_valid = true;
+	}
+	else
+		last_loc_valid = false;
+}
+
+
+bool cPlayer::CanUseChatMacros()
+{
+#ifdef GAMEMASTER
+	return true;
+#endif
+	return IsKnight() || IsRuler() || IsTeacher();
+}
+
+
+POINT cPlayer::BladePos(void)
+{
+	const static POINT blade_positions[MAX_RESOLUTIONS][6] =
+	{
+		{	{200,-80},	{160,0},  {120,0}, 	{80,80}, {40,160}, {00,240}},
+		{	{310,-100},	{260,0},  {210,0}, 	{160,100}, {110,200}, {60,300}},
+		{	{420,-128},	{356,0},  {292,0}, 	{228,128}, {144,256}, {100,384}}
+	};
+
+	const POINT *p = &blade_positions[cDD->Res()][blade_position_index];
+	if (blade_position_index >= 5)
+	{
+		blade_position_index = 0;
+		SetUsingBlade(false);
+	}
+
+	return *p;
+}
+
+int cPlayer::Skill(int art_id)
+{
+	// if it's a PP evoke, return the skill we payed for!
+	if (pp.in_use && (pp.cursel == GMsg_UsePPoint::USE_ART) &&
+		(art_id == pp.art_id))
+		return pp.skill;
+#if defined (UL_DEBUG) || defined (GAMEMASTER) // no sphere restrictions in debug builds
+	return skills[art_id].skill;
+#elif PMARE
+
+	if (orbit < 15)
+		return min(skills[art_id].skill, 30);
+	else if (orbit < 25)
+		return min(skills[art_id].skill, 40);
+	else if (orbit < 35)
+		return min(skills[art_id].skill, 50);
+	else if (orbit < 45)
+		return min(skills[art_id].skill, 60);
+	else if (orbit < 50)
+		return min(skills[art_id].skill, 70);
+	else if (orbit < 55)
+		return min(skills[art_id].skill, 80);
+	else if (orbit >= 55)
+		return min(skills[art_id].skill, 90);
+
+	return min(skills[art_id].skill, orbit);
+
+#else // otherwise, skill is limited by orbit, unless it is blade or flame,
+	// where lowering the skill level would cause a server error,
+	// or a focus skill, where the player couldn't use items in inventory
+	int skill = skills[art_id].skill;
+	if (!skill)
+		return 0;
+
+	if ((art_id == Arts::DREAMBLADE) ||
+		((art_id >= Arts::GATESMASHER) && (art_id <= Arts::FLAMERUIN)) ||
+		((art_id >= Arts::GATEKEEPER) && (art_id <= Arts::FATESENDER)))
+		return skill;
+	else if ((orbit == 0) && skill == 1)
+		return 1;
+	else if ((skills[art_id].skill) <= orbit)
+		skill /= (((flags & ACTOR_INVISIBLE) && !arts->UseInSanctuary(art_id)) ? 2 : 1);
+	else
+		skill = orbit / (((flags & ACTOR_INVISIBLE) && !arts->UseInSanctuary(art_id)) ? 2 : 1);
+
+	if (!skill && skills[art_id].skill > 0)
+		skill = 1;
+
+	return skill;
+#endif
+ }
+
+bool cPlayer::RetryTeleport(void)
+{
+	return this->Teleport(tportx, tporty, tport_angle, tport_level, tport_sound, true);
+}
+
+// if level_id is NO_LEVEL, don't do level change
+// if retry is true, it means we're retrying a previously blocked teleport, so don't 
+// display any more error messages
+bool cPlayer::Teleport(float x, float y, int facing_angle, int level_id, int sound_id, bool retry)
+{
+
+	VERIFY_XY(x, y);
+
+	tportx = x; tporty = y; tport_angle = facing_angle; tport_level = level_id; tport_sound = sound_id;
+
+	bool level_change = false;
+
+	int	last_room = Room();
+	float old_x = this->x;
+	float old_y = this->y;
+
+	attempting_teleport = true;
+
+	if (acceptrejectdlg)
+	{	// auto reject when leaving the area
+		cDS->PlaySound(LyraSound::MESSAGE);
+		SendMessage(hwnd_acceptreject, WM_COMMAND, MAKEWPARAM(IDC_REJECT, 0), 0);
+		//	LoadString (hInstance, IDS_RESPOND_FIRST, disp_message, sizeof(disp_message));
+		//	display->DisplayMessage(disp_message);
+		//	return false;
+	}
+
+	if (options.network && gs->LoggedIntoLevel() && !gs->LoggedIntoRoom())
+	{ // don't allow them to leave until they answer a query, or
+	  // if we haven't gotten the room entry item drop message yet
+		LoadString(hInstance, IDS_AWAIT_ORIENTATION, disp_message, sizeof(disp_message));
+		if (!retry)
+		{
+			display->DisplayMessage(disp_message);
+			cDS->PlaySound(LyraSound::MESSAGE);
+		}
+		return false;
+	}
+
+	bool trigger_redirect = false;
+
+	// check if we're going to redirect the player elsewhere
+	if (level_id == NO_LEVEL && LastLevel() == TP_REDIRECT_LEVEL)
+	{
+		// we're in the same plane so use the sector to track down the room
+		int p_sector = FindSector(x, y, 0, true);
+
+		//_stprintf(message, _T("Room ID: %d, Last Room ID: %d, Level ID: %d, Last Level ID: %d"), 
+		//	level->Rooms[level->Sectors[p_sector]->room].id, 
+		//	last_room, 
+		//	level->ID(),
+		//	LastLevel());
+		//display->DisplayMessage(message);
+
+		// check if we're traveling to the redirect room and set the flag if we are
+		if ((p_sector != DEAD_SECTOR) && (level->Rooms[level->Sectors[p_sector]->room].id == TP_REDIRECT_ROOM))
+		{
+			trigger_redirect = true;
+		}
+	}
+	// These coords mean a GM is trying to send the player somewhere random
+	else if (x == 0 && y == 0 && level_id == 0)
+	{
+		trigger_redirect = true;
+	}
+
+	if (trigger_redirect)
+	{
+		float new_x, new_y;
+		int new_level;
+		_stscanf(DisperseCoordinate(-1), _T("%f;%f;%d"), &new_x, &new_y, &new_level);
+
+		// we need to have a random redirect list to choose from here
+		return this->Teleport(new_x, new_y, 0, new_level, LyraSound::NONE);
+	}
+
+	this->MarkLastLocation();
+
+	// play sound for teleport
+	cDS->PlaySound(sound_id, old_x, old_y);
+
+	if ((level_id != NO_LEVEL) && (level_id != level->ID()))
+	{ // go to new level, if it's reasonable
+		if (!level->IsValidLevel(level_id))
+		{
+			player->Teleport(LastX(), LastY(), 0, LastLevel());
+			return false;
+		}
+
+		if ((options.network) && gs && gs->LoggedIntoGame())
+			gs->LevelLogout(RMsg_Logout::LOGOUT);
+
+		if (options.network)
+			cDD->ShowIntroBitmap();
+
+		level->Load(level_id);
+
+		level_change = true;
+
+#ifdef GAMEMASTER
+		if (agentbox)
+			agentbox->SortAgents();
+#endif
+
+	}
+
+	// move	to current location
+	int new_sector = FindSector(x, y, 0, true);
+	if (new_sector == DEAD_SECTOR)
+	{
+		player->Teleport(LastX(), LastY(), 0, LastLevel());
+		return false;
+	}
+
+	this->PlaceActor(x, y, 0, facing_angle, SET_XHEIGHT, true);
+
+	this->SetTeleporting(true);
+	this->SetFreeMoves(NUM_FREE_MOVES);
+
+	// reset owned items to be with the player; this is important
+	for (cItem* item = actors->IterateItems(INIT); item != NO_ITEM; item = actors->IterateItems(NEXT))
+		if (item->Status() == ITEM_OWNED)
+			item->PlaceActor(this->x, this->y, 0, this->angle, SET_XHEIGHT, true);
+	actors->IterateItems(DONE);
+	std::map<int, freqtick_t>::iterator it;
+	std::vector<int> removals;
+	for (it = item_ae_ticks.begin(); it != item_ae_ticks.end(); it++) {
+		if (it->second.remove_with_room_change)
+			removals.push_back(it->first);
+	}
+
+	for (int i = 0; i < removals.size(); i++)
+	{
+		item_ae_ticks.erase(removals[i]);
+	}
+	if (level_change)
+	{
+		if (options.network)
+			gs->LevelLogin();
+
+		// remove the avatar shield upon level change
+		player->RemoveTimedEffect(LyraEffect::PLAYER_SHIELD);
+
+		safezone = false;
+		guild_level = false;
+		// check if we're in a no damage level before trying to apply damage
+		for (int i = 0; i < num_no_damage_levels; i++)
+		{
+			if (no_damage_levels[i] == level->ID())
+			{
+				safezone = true;
+				break;
+			}
+		}
+
+		for (int i = 0; i < NUM_GUILDS; i++)
+		{
+			if (guild_levels[i] == level->ID())
+			{
+				guild_level = true;
+				break;
+			}
+		}
+	}
+	else
+	{
+		if ((this->Room() != (lyra_id_t)last_room) && gs && gs->LoggedIntoLevel())
+		{
+			this->MarkLastLocation();
+			gs->OnRoomChange((short)old_x, short(old_y));
+
+			// remove the avatar shield upon room change
+			player->RemoveTimedEffect(LyraEffect::PLAYER_SHIELD);
+		}
+	}
+
+	attempting_teleport = false;
+
+	return true;
+}
+
+// Destructor
+cPlayer::~cPlayer(void)
+{
+}
+
+#ifdef CHECK_INVARIANTS
+void cPlayer::CheckInvariants(int line, TCHAR *file)
+{
+
+}
+#endif
