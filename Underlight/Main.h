@@ -22,9 +22,6 @@ LRESULT WINAPI WindowProc ( HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
 LRESULT WINAPI AgentWindowProc ( HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam );
 static void ExitCallback (void* value);
 
-<<<<<<< HEAD
 bool WindowContainer();
-=======
->>>>>>> bc008ab3042ff9b74d47cdda47ce2318311a51db
 
 #endif
