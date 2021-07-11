@@ -301,11 +301,13 @@ void  Realm_OnRButtonUp( HWND hWnd,WORD x, WORD y, WORD fwKeys )
 	StopMouseLook();
 }
 
+
 static MouseClass mouse;
 void  Realm_OnMouseMove(HWND hWnd, WORD x, WORD y, WORD fwKeys)
 {
 	
 	//mouse.OnMouseMove(x, y);
+
 	if (mouselooking)
 	{
 		StopMouseLook();
@@ -333,11 +335,10 @@ void  Realm_OnMouseMove(HWND hWnd, WORD x, WORD y, WORD fwKeys)
 static void StartMouseMove(int x, int y)
 {	
 	mouse_move.moving = true;
-	if (x >= cDD->ViewX() || y >= cDD->ViewY())
-	{
-		
-		return;
-	}
+
+	if (x >= cDD->ViewX() || y >= cDD->ViewY())  
+		 return;
+	
 	int  y_ratio = (y*5)/cDD->ViewY();	
 	switch (y_ratio)
 	{
@@ -380,12 +381,14 @@ void StopMouseLook(void)
 		mouse_look.right = mouse_look.shift = mouse_look.looking = false;
 	mouse_look.xratio = 1.0f;
 	mouse_look.yratio = 1.0f;
+
 	mouse_look.looking = false;
 }
 
 static void StartMouseLook(int x, int y)
 {
 	mouse_look.looking = true;
+
 
 	/* using rawinput relative cords, via mouseclass/mouseevent.
 	mouse_look.yratio = 1.0f;
@@ -399,7 +402,9 @@ static void StartMouseLook(int x, int y)
 		case 8: mouse_look.down = true; mouse_look.yratio = 0.2f; break;
 		case 9: mouse_look.down = true; mouse_look.yratio = 0.5f; break;
 		case 10: mouse_look.down = true; break;
+
 	} 
+
 	if ((mouse_look.up || mouse_look.down) && options.invertmouse)
 	{
 		mouse_look.up = !mouse_look.up;
@@ -421,11 +426,9 @@ static void StartMouseLook(int x, int y)
 	case 11: mouse_look.right = true; mouse_look.xratio = 0.1f; break;
 	case 12: mouse_look.right = true; mouse_look.xratio = 0.25f; break;
 	case 13: mouse_look.right = true; mouse_look.xratio = 0.4f; break;
-	case 14: mouse_look.right = true; mouse_look.xratio = 0.65f; break;
+	
+	case 15: mouse_look.right = true; break;
+	case 16: mouse_look.right = mouse_look.shift = true; break;
 	}*/
 	return;
 }
-
-
-
-

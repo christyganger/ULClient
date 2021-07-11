@@ -97,7 +97,7 @@ class cPlayer : public cActor
    public:
 
 	   enum { INVALID_PLAYERID = -1 };
-	   
+
 
    protected:
 	   lyra_id_t playerID;

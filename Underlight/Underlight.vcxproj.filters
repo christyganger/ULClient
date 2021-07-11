@@ -17,12 +17,14 @@
       <UniqueIdentifier>{c8f65b2d-1a06-411a-934e-5441e2b8b2a3}</UniqueIdentifier>
       <Extensions>lib</Extensions>
     </Filter>
+
     <Filter Include="Header Files\Mouse">
       <UniqueIdentifier>{acc7e40a-b2da-411c-aa94-4559177b381d}</UniqueIdentifier>
     </Filter>
     <Filter Include="Source Files\Mouse">
       <UniqueIdentifier>{c136f9de-5e82-47ad-a8a3-600d3423db30}</UniqueIdentifier>
     </Filter>
+
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BuildView.cpp">
@@ -432,6 +434,7 @@
     <ClInclude Include="base64.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+
     <ClInclude Include="Mouse\MouseClass.h">
       <Filter>Header Files\Mouse</Filter>
     </ClInclude>
@@ -441,6 +444,7 @@
     <ClInclude Include="MeHelper.h">
       <Filter>Header Files\Mouse</Filter>
     </ClInclude>
+
   </ItemGroup>
   <ItemGroup>
     <None Include="Lyra.ico">

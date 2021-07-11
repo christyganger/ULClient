@@ -39,8 +39,6 @@
 #include "utils.h"
 #include "LmXPTable.h"
 
-
-
 //////////////////////////////////////////////////////////////////
 // External Global Variables
 
@@ -1081,6 +1079,7 @@ void Realm_OnKey(HWND hWnd, UINT vk, BOOL fDown, int cRepeat, UINT flags)
 	int found_key = -1;
 	int i;
 	cNeighbor *n;
+
 	CancelExit();
 
 	//_stprintf(message, "got key: %d fdown: %d\n", vk, fDown);	
@@ -1290,6 +1289,7 @@ void Realm_OnKey(HWND hWnd, UINT vk, BOOL fDown, int cRepeat, UINT flags)
 	case LyraKeyboard::STRAFE: keyboard[Keystates::STRAFE] = 1; break;
 	case LyraKeyboard::SIDESTEP_LEFT: keyboard[Keystates::SIDESTEP_LEFT] = 1; break;
 	case LyraKeyboard::SIDESTEP_RIGHT: keyboard[Keystates::SIDESTEP_RIGHT] = 1; break;
+
 	case LyraKeyboard::MOUSE_LOOK: 
 	{
 		//flip the mouse looking sign if false to true , if true to false.
@@ -1300,6 +1300,7 @@ void Realm_OnKey(HWND hWnd, UINT vk, BOOL fDown, int cRepeat, UINT flags)
 		else { display->DisplayMessage("Mouse look Disabled.", false); }
 		break; 
 	}
+
 	case LyraKeyboard::WAVE: player->SetWaving(true);	break;
 		
 		}
@@ -1746,8 +1747,8 @@ void Realm_OnKey(HWND hWnd, UINT vk, BOOL fDown, int cRepeat, UINT flags)
 		cp->SetUsing(false);
 		break;
 	case LyraKeyboard::MOUSE_LOOK:
+
 		mouselooking = !mouselooking;
-		options.mouselook = !options.mouselook;
 		SaveInGameRegistryOptionValues();
 		break;
 	case LyraKeyboard::SHOW_RANKS:
@@ -2014,5 +2015,3 @@ static void JunkCallback(void *value)
 	}
 	return;
 }
-
-

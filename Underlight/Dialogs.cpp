@@ -17,6 +17,7 @@
 #include "cChat.h"
 #include "cParty.h"
 #include "cDSound.h"
+#include "Mouse.h"
 #include "Options.h"
 #include "cAgentServer.h"
 #include "SharedConstants.h"
@@ -39,7 +40,6 @@
 #include "Realm.h"
 #include "cLevel.h"
 #include "cEffects.h"
-#include "Main.h"
 
 /////////////////////////////////////////////////
 // External Global Variables

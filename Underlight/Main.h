@@ -6,7 +6,9 @@
 #define MAIN_H
 
 #include "Central.h"
+
 #include "MeHelper.h" //mouse event helper, to swipe ME from proc
+
 
 //////////////////////////////////////////////////////////////////
 // Constants
@@ -20,6 +22,9 @@ LRESULT WINAPI WindowProc ( HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
 LRESULT WINAPI AgentWindowProc ( HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam );
 static void ExitCallback (void* value);
 
+<<<<<<< HEAD
 bool WindowContainer();
+=======
+>>>>>>> bc008ab3042ff9b74d47cdda47ce2318311a51db
 
 #endif

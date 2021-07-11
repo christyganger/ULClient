@@ -402,7 +402,7 @@ void cPostQuest::Activate(cGoal *new_quest)
 	if (active)
 		return;
 
-	_tprintf(("activated; hwnd = %p\n"), hwnd_postquest);
+	_tprintf(_T("activated; hwnd = %d\n"), hwnd_postquest);
 
 	active = TRUE; 
 

@@ -88,6 +88,7 @@ bool WindowContainer()
 		return raw_input_initialized;
 	}
 }
+
 /////////////////////////////////////////////////
 // Functions
 
@@ -175,7 +176,6 @@ int PASCAL WinMain( HINSTANCE hInst, HINSTANCE hPrevInstance,
 				DispatchMessage(&msg);
 			}
 
-
 		}
 		else // no messages, or frame timer 
 			CreateFrame();
@@ -184,7 +184,7 @@ int PASCAL WinMain( HINSTANCE hInst, HINSTANCE hPrevInstance,
 
 LRESULT WINAPI WindowProc ( HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam )
 {
-	
+
 	static HCURSOR hCursor = LoadCursor(NULL,IDC_ARROW); // for cursor reset
 
 	if (exiting) // ignore game messages while exiting
@@ -212,7 +212,7 @@ LRESULT WINAPI WindowProc ( HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
 		HANDLE_MSG(hWnd, WM_MBUTTONUP, Realm_OnMButtonUp);
 		HANDLE_MSG(hWnd, WM_RBUTTONUP, Realm_OnRButtonUp);
 		//HANDLE_MSG(hWnd, WM_COMMAND, Realm_OnCommand);
-		
+
 	case WM_MOUSEWHEEL:
 		Realm_OnMouseWheelScroll(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), (short)HIWORD(wParam));
 
@@ -220,6 +220,7 @@ LRESULT WINAPI WindowProc ( HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
 		if (wParam == MIN_FRAME_TIMER)
 			CreateFrame();
 		break;
+
 
 	case WM_INPUT:
 	{

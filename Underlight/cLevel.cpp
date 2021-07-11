@@ -1662,17 +1662,21 @@ int cLevel::BreakupSectors(file_vertex* verts, int num_sectors, int num_verts, i
 					
 					int old_num_hulls = num_hulls;
 					int dupvert = -1;
+
 					for (int s=0; s<num_dupverts; s++) {
+
 						if (vertcount[dupverts[s]] > 3) {
 							dupvert = dupverts[s];
 							break;
 						}
+
 
 						if (s == num_dupverts)
 							continue;
 					}
 
 					
+			
  
 					num_hulls = this->SplitHull(dupvert, hull_num, num_hulls, num_dupverts);
 					if (old_num_hulls == num_hulls)
@@ -1847,7 +1851,9 @@ int cLevel::CombineHulls(int num_hulls, file_vertex* verts, int sector_num, int 
 				bbox.maxy = verts[v1].y;
 		}
 		
+
 		for (int j=0; j< hull_count; j++)
+
 		{
 			if (j == i)
 				continue;
@@ -2075,7 +2081,9 @@ int cLevel::FixBaseLines(int num_hulls, file_vertex* verts, int sector_num, bool
 	float ydiff = y1-y0;
 	bool noy = false;
 	float baseangle;
+
 	if ((std::abs((y1 - y0))) < 0.001f) {
+
 		noy = true;
 		baseangle = 999999999.0f;
 	} else
@@ -2230,6 +2238,7 @@ void cLevel::CreateEdgeSet(int v0_start, int v1_start, int v1_end, int hull_inde
 
 
 
+
 int cLevel::SplitHull(int shared_vert, int hull_num, int num_hulls, int num_dupverts)
 {	// first, find a line that has this vertex as an anchor
 	// index 0 = start line
@@ -2267,9 +2276,11 @@ int cLevel::SplitHull(int shared_vert, int hull_num, int num_hulls, int num_dupv
 	// to where we started. we compare the # of lines in each winding, and pick the one
 	// with the fewest.
 
+
 	for (int t=0; t<4; t++) {
 		// loop through and try each line as a starting line
 		for (int s=0; s<4; s++) {
+
 			if (s == t)
 				continue;
 			if (verbose) {
@@ -2283,7 +2294,9 @@ int cLevel::SplitHull(int shared_vert, int hull_num, int num_hulls, int num_dupv
 
 	int best_hull = -1;
 	int min_distance = 99999999.0f;
+
 	for (int s=0; s<16; s++) {
+
 		if ((test_hulls[s].num_lines > 1000) ||
 			(test_hulls[s].num_lines < 3))
 		{
@@ -2309,7 +2322,9 @@ int cLevel::SplitHull(int shared_vert, int hull_num, int num_hulls, int num_dupv
 	// we have now picked the best hull of the bunch; split it out from the rest
 	memcpy(&hulls[num_hulls], &test_hulls[best_hull], sizeof(hull_t));
 	// remove every line in the new hull from the original
+
 	for (int s=0; s<hulls[num_hulls].num_lines; s++) {
+
 		int l = hulls[num_hulls].lines[s];
 		for (int t=0; t<hulls[hull_num].num_lines; t++) {
 			int q = hulls[hull_num].lines[t];

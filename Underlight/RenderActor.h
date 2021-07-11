@@ -3,7 +3,9 @@
 
 // Note : Used internally by the Graphics Engine. 
 
+
 #include <cPlayer.h>
+
 #ifndef ACTOR_RENDERER_H
 #define ACTOR_RENDERER_H
 
@@ -57,7 +59,9 @@ extern cColumnClipper column_clipper;
 void InitRenderActor(void);
 void DeInitRenderActor(void);
 
+
 void StartRenderActor(unsigned char *viewBuffer, int pitch, cPlayer *player);
+
 void EndRenderActor(void);
 
 bool render_actor(cActor *actor);

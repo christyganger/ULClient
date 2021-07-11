@@ -4,6 +4,7 @@
 
 #ifndef INCL_UTILS
 #define INCL_UTILS
+
 #include "Central.h"
 #include "SharedConstants.h"
 class cActor;

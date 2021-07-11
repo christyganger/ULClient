@@ -41,10 +41,12 @@ class cClient
 	   BOOL logged_in;
 	   TCHAR username[Lyra::PLAYERNAME_MAX];
 	   TCHAR	password[Lyra::PASSWORD_MAX];
+
 	   void (*msg_callback)(AMsg &amsg); 
 
    public:
       cClient(HWND hWindow, void (*amsg_callback)(AMsg &amsg));
+
 	  ~cClient(void);
 	  void Connect(char *server, TCHAR *agent_username, TCHAR *agent_password);
 	  BOOL Login(void);

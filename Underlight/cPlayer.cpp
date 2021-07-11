@@ -37,6 +37,7 @@
 #include "LmStats.h"
 #include "LmXPTable.h"
 #include "./MeHelper.h" //added helper class for MouseEvent
+
 extern xp_entry lyra_xp_table[];
 
 
@@ -117,7 +118,7 @@ cPlayer::cPlayer(short viewport_height) :
 	collapse_time = 0;
 	checksum_incorrect = attempting_teleport = false;
 
-   
+
 	for (int i = 0; i < COLLAPSES_TRACKED; i++)
 	{
 		collapses[i].collapser_id = Lyra::ID_UNKNOWN;
@@ -301,6 +302,7 @@ bool cPlayer::Update(void)
 
 		shader->SetGlobalBrightness(brightness);
 		brightness += timing->nmsecs * brightness_rate;
+
 		if (brightness > 1.1)
 		{
 			shader->SetGlobalBrightness(1.0);
@@ -340,7 +342,9 @@ bool cPlayer::Update(void)
 
 	if (!options.network ||
 		((options.welcome_ai || (gs && gs->LoggedIntoGame())) &&
-			((gs && gs->LoggedIntoLevel()) || (level->ID() == START_LEVEL_ID))))
+
+		((gs && gs->LoggedIntoLevel()) || (level->ID() == START_LEVEL_ID))))
+
 		move = true;
 
 	if ((flags & ACTOR_PARALYZED))//  || (cp->DragItem() != NO_ITEM))
@@ -430,29 +434,32 @@ bool cPlayer::Update(void)
 
 	//declare and initialize mouse for raw input from our helper
 	MouseEvent mouse = MeHelper::GetME();
+
 	if (move)
 	{
 		if (!spin && keyboard[Keystates::STRAFE]) // disregard
 			keyboard[Keystates::STRAFE] = 0;
-		if ((keyboard[Keystates::STRAFE] || forced_move.strafe) &&
-			(keyboard[Keystates::TURN_RIGHT] /* || mouse_move.right*/ || keyboard[Keystates::TURN_LEFT]
-				/* || mouse_move.left */ || forced_move.right || forced_move.left || mouse.MouseXorYOverThree())) // strafing?
+		if ((keyboard[Keystates::STRAFE] || forced_move.strafe) &&(keyboard[Keystates::TURN_RIGHT] || keyboard[Keystates::TURN_LEFT]
+				|| forced_move.right || forced_move.left || mouse.MouseXorYOverThree())) // strafing?
 		{
 			if (keyboard[Keystates::TURN_RIGHT] /* || mouse_move.right*/ || forced_move.right)
 			{ // handle angles for combined strafe / forwards / backwards move
 				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward)
 					moveangle = FixAngle(angle + Angle_45);
 				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward*/ || forced_move.backward)
+
 					moveangle = FixAngle(angle - Angle_45);
 				else moveangle = FixAngle(angle + Angle_90);
 				strafe = STRAFE_RIGHT;
 			}
+
 
 			if (keyboard[Keystates::TURN_LEFT] /* || mouse_move.left*/ || forced_move.left)
 			{ // handle angles for combined strafe / forwards / backwards move
 				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward*/ || forced_move.forward)
 					moveangle = FixAngle(angle - Angle_45);
 				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward*/ || forced_move.backward)
+
 					moveangle = FixAngle(angle + Angle_45);
 				else moveangle = FixAngle(angle - Angle_90);
 				strafe = STRAFE_LEFT;
@@ -460,6 +467,7 @@ bool cPlayer::Update(void)
 		}
 		else if (keyboard[Keystates::SIDESTEP_LEFT] || keyboard[Keystates::SIDESTEP_RIGHT]) // sidestep keys
 		{
+
 
 			//			INFO("SSL");
 							// allow turns in combination with sidesteps
@@ -486,14 +494,17 @@ bool cPlayer::Update(void)
 				turnrate = options.turnrate * speed;
 			else if (turnrate < -(options.turnrate * speed))
 				turnrate = -options.turnrate * speed;
+
 			angle = FixAngle(angle + (int)(turnrate));
 			moveangle = angle;
 
 			if (keyboard[Keystates::SIDESTEP_RIGHT])
 			{ // handle angles for combined strafe / forwards / backwards move
+
 				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward)
 					moveangle = FixAngle(angle + Angle_45);
 				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward*/ || forced_move.backward)
+
 					moveangle = FixAngle(moveangle - Angle_45);
 				else moveangle = FixAngle(moveangle + Angle_90);
 				strafe = STRAFE_RIGHT;
@@ -501,9 +512,11 @@ bool cPlayer::Update(void)
 
 			if (keyboard[Keystates::SIDESTEP_LEFT])
 			{ // handle angles for combined strafe / forwards / backwards move
+
 				if (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward)
 					moveangle = FixAngle(angle - Angle_45);
 				else if (keyboard[Keystates::MOVE_BACKWARD] /* || mouse_move.backward */ || forced_move.backward)
+
 					moveangle = FixAngle(moveangle + Angle_45);
 				else moveangle = FixAngle(moveangle - Angle_90);
 				strafe = STRAFE_LEFT;
@@ -514,6 +527,7 @@ bool cPlayer::Update(void)
 		{
 			if (!spin)
 				keyboard[Keystates::TURN_RIGHT] = 0;
+
 
 			//check if mousekey is pressed, and equal or over 3 relative cords
 			if (mouse_look.looking && mouse.MouseXorYOverThree())/* || mouse_move.right || mouse_look.right*/
@@ -541,10 +555,12 @@ bool cPlayer::Update(void)
 				turnrate = options.turnrate * speed;
 			else if (turnrate < -(options.turnrate * speed))
 				turnrate = -options.turnrate * speed;
+
 			angle = FixAngle(angle + (int)(turnrate));
 			moveangle = angle;
 		}
 	}
+
 
 
 	if (move && (keyboard[Keystates::MOVE_FORWARD] /* || mouse_move.forward */ || forced_move.forward))
@@ -557,6 +573,7 @@ bool cPlayer::Update(void)
 				|| keyboard[Keystates::TURN_LEFT] /*||  mouse_move.left */ || forced_move.left))))
 		velocity = MAXSTRAFE;
 	else if ((z > xheight - (0.1 * physht)) && (z < xheight + (0.1 * physht)))
+
 	{
 		if (velocity > 0)
 		{
@@ -578,11 +595,13 @@ bool cPlayer::Update(void)
 		move_result_t res;
 		if (strafe != NO_STRAFE)
 		{ // make sure deceleration doesn't drag player forward after a strafe
-			MoveActor(this, moveangle, velocity * timing->nticks * speed, MOVE_NORMAL, &res);
+
+			MoveActor(this, moveangle, velocity*timing->nticks*speed, MOVE_NORMAL, &res);
 			velocity = 0.0f;
 		}
 		else
-			MoveActor(this, moveangle, velocity * timing->nticks * speed, MOVE_NORMAL, &res);
+			MoveActor(this, moveangle, velocity*timing->nticks*speed, MOVE_NORMAL, &res);
+
 		if (flags & ACTOR_FLY)
 		{
 			if (res.hit == HIT_FLOOR || res.hit == HIT_WALL || res.hit == HIT_CEILING || res.hit == HIT_ACTOR)
@@ -638,7 +657,9 @@ bool cPlayer::Update(void)
 		gs->SendPositionUpdate(TRIGGER_MOVE);
 
 	if (!was_in_water && this->InWater() && !(flags & ACTOR_SOULSPHERE) &&
+
 		((z > xheight - (.1 * physht)) && (z < xheight + (.1 * physht))))
+
 		cDS->PlaySound(LyraSound::ENTER_WATER, x, y, false);
 
 	if (keyboard[Keystates::TRIP] && move)
@@ -659,6 +680,7 @@ bool cPlayer::Update(void)
 			vertical_tilt_float = (float)(vertical_tilt_origin);
 		}
 	}
+
 	else if (move && (keyboard[Keystates::LOOK_DOWN]))// look down //simplified ~christy 7/11/21
 	{
 		vertical_tilt_float -= timing->nticks * (float)UPDOWNVEL;

@@ -15,6 +15,7 @@
 
 //#include "AgentSvc_i.c"
 
+
 #include <stdio.h>
 
 TCHAR agent_working_directory[_MAX_PATH];

@@ -674,6 +674,7 @@ void convert_hton(T x, void* ptr) {
 
 void FASTCALL LyraItem::ConvertStateToNetwork(void* ssptr)
 {
+
     //initializing before switch
     lyra_item_ward_t ward{};
     lyra_item_missile_t missile{};
